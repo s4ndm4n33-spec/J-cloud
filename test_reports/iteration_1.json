@@ -1,0 +1,38 @@
+{
+  "summary": "Backend: 15/15 pytest tests passing (health, auth, projects+tree+file, gauntlet AST, governance scan/override, terminal block + override consume-once, git status/commit, AI chat graceful offline). Frontend: /login renders Sovereign Shards branding with DEPLOY THE SHARD and google-signin-button; /ide loads with session cookie showing top-bar, file-tree, Monaco editor, terminal, AI Coworker; clicking tree-file-main.py opens a Monaco tab; Cmd+K opens InlineEditModal; gauntlet-ast updates HUD to '5/5'; chat send works (J:SYSTEM greeting visible, no 500 from offline LLM). One React warning: duplicate README.md tab key on initial load.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/gauntlet/evaluate", "issue": "Korotkevich master returns passed=true even when a 'warning' severity issue is flagged (e.g. range(len)). Issues list correctly contains the finding, but master pass/fail boolean only considers errors. Confirm intended: warnings shouldn't drop the 5/5 score."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "IDE.jsx", "issue": "Initial load opens README.md twice → React 'Encountered two children with the same key, README.md' warning + duplicate README.md tab visible in the editor tab bar. Root cause: useEffect (line ~48-55) auto-opens README on project load and the `openFile` callback's `existing` check (line ~62) both read stale `tabs` via closure, so under React 18 StrictMode double-invoke both effect runs append README. Fix: use functional setTabs((prev)=>prev.find(...)?prev:[...prev,newTab]) inside openFile, or guard the effect with a ref/flag.", "selector": "[data-testid='tab-README.md']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_gauntlet_devspace.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix duplicate README.md tab on initial IDE load (use functional setState in openFile to dedupe; consider guarding the auto-open effect with a useRef flag to avoid StrictMode double-fire).",
+    "(Optional) Decide whether warning-severity findings should drop a master's passed flag in /api/gauntlet/evaluate so HUD reflects sub-5/5 for code with warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~720 lines mixing auth, projects, files, governance, terminal, git, AI — within budget but approaching the 700-line split threshold; consider splitting into modules (auth_router, projects_router, ai_router, terminal_router) for maintainability.",
+    "IDE.jsx openFile closes over stale `tabs` (line 62) — duplicate-tab race. Use functional setState.",
+    "terminal/exec passes full os.environ to subprocess shell; acceptable but tighten env passthrough for sandboxed exec if hardening is desired.",
+    "All endpoints async, env vars used correctly (no defaults), MongoDB _id excluded via projections, override token consume-once works (verified)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/__init__.py",
+    "/app/backend/tests/test_gauntlet_devspace.py"
+  ],
+  "success_rate": {"backend": "100% (15/15)", "frontend": "95% (all critical flows pass; 1 React duplicate-key warning)"},
+  "test_credentials": "Bearer test_session_devspace_001 / override password integrity-halt-override (seeded in mongo for user_test_devspace).",
+  "seed_data_creation": "Re-seeded user_test_devspace + session via mongosh from /app/memory/test_credentials.md instructions. Tests also create a TEST_shard project per run.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite at /app/backend/tests/test_gauntlet_devspace.py covers all critical flows including consume-once override token. AI chat test only validates non-500 (Emergent LLM budget exhausted — '// J:OFFLINE' is expected graceful path). React duplicate-key for README.md is the only outstanding UI issue; fix in IDE.jsx openFile to use functional setTabs.",
+  "rca of the issue": "Duplicate README tab — In IDE.jsx the auto-open useEffect calls openFile('README.md'). openFile's de-dupe check `tabs.find(...)` reads `tabs` from the closure created at render time. React 18 StrictMode invokes effects twice in development; both invocations see tabs.length===0 in the closure, both call setTabs([...tabs, newTab]) and React's update merging produces two identical tabs (or one render adds two). Fix: setTabs((prev)=> prev.some(t=>t.path===path) ? prev : [...prev, newTab]) and use a useRef flag to ensure the auto-open effect only fires once per project."
+}
