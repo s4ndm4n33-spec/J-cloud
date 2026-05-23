@@ -44,30 +44,38 @@ export default function IDE() {
     })();
   }, []);
 
-  // Load tree when project changes
+  // Load tree when project changes (auto-open README only once per project)
+  const autoOpenedFor = useRef(null);
   useEffect(() => {
     if (!activeProject) return;
     (async () => {
       const r = await projectTree(activeProject.project_id);
       setTree(r.tree);
-      // Auto-open README.md if present
-      const readme = r.tree.find((f) => f.type === "file" && f.name.toLowerCase() === "readme.md");
-      if (readme && tabs.length === 0) openFile(readme.path);
+      if (autoOpenedFor.current !== activeProject.project_id) {
+        autoOpenedFor.current = activeProject.project_id;
+        const readme = r.tree.find((f) => f.type === "file" && f.name.toLowerCase() === "readme.md");
+        if (readme) openFile(readme.path);
+      }
     })();
     // eslint-disable-next-line
   }, [activeProject]);
 
   const openFile = useCallback(async (path) => {
     if (!activeProject) return;
-    const existing = tabs.find((t) => t.path === path);
-    if (existing) {
-      setActiveTab(path);
-      return;
-    }
-    const f = await readFile(activeProject.project_id, path);
-    setTabs((prev) => [...prev, { path, content: f.content, language: f.language, dirty: false, score: null }]);
+    // Optimistic dedupe to survive StrictMode double-invoke
+    let alreadyOpen = false;
+    setTabs((prev) => {
+      if (prev.some((t) => t.path === path)) { alreadyOpen = true; return prev; }
+      return prev;
+    });
     setActiveTab(path);
-  }, [activeProject, tabs]);
+    if (alreadyOpen) return;
+    const f = await readFile(activeProject.project_id, path);
+    setTabs((prev) => {
+      if (prev.some((t) => t.path === path)) return prev;
+      return [...prev, { path, content: f.content, language: f.language, dirty: false, score: null }];
+    });
+  }, [activeProject]);
 
   const closeTab = (path) => {
     setTabs((prev) => prev.filter((t) => t.path !== path));
