@@ -20,6 +20,7 @@
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
 ## Implemented (2026-05-23)
+- **BYO-Key Settings panel** — Top-bar gear icon opens a modal where users paste their own OpenAI / Anthropic / Gemini keys. Keys are encrypted at rest with Fernet (`core/keyvault.py`), masked in the UI, and resolved before every LLM call. Falls back to the Emergent Universal Key when no per-user key is configured. Endpoints: `GET/PUT/DELETE /api/settings/keys`.
 - Emergent Google OAuth (`/api/auth/session`, `/api/auth/me`, `/api/auth/logout`) with httpOnly cookies + Bearer fallback.
 - Projects: list/create with auto-seeded `README.md`, `main.py`, `index.html`, `.gitignore` + `git init`.
 - File CRUD (path-traversal guarded), tree walk excluding `.git`/`node_modules`/`__pycache__`/`.venv`.

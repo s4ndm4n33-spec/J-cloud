@@ -32,6 +32,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from core.destructive import scan as destructive_scan, scan_command
 from core.fivemasters import evaluate as fm_evaluate
+from core.keyvault import SUPPORTED_PROVIDERS, decrypt_key, encrypt_key, mask
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
 
 ROOT_DIR = Path(__file__).parent
@@ -538,17 +539,87 @@ def _build_context_block(payload: dict) -> str:
     return "\n\n".join(parts)
 
 
-async def _llm_call(provider: str, model: str, system: str, user_text: str,
-                    session_id: str) -> str:
-    """Make a single LLM call via emergentintegrations."""
+async def _resolve_provider_key(user_id: str, provider: str) -> tuple[str, str]:
+    """Return (api_key, source). Prefer BYO key; fall back to Emergent Universal."""
+    doc = await db.user_provider_keys.find_one(
+        {"user_id": user_id, "provider": provider}, {"_id": 0}
+    )
+    if doc and doc.get("ciphertext"):
+        try:
+            return decrypt_key(doc["ciphertext"]), "byok"
+        except (ValueError, TypeError):
+            log.warning(f"BYOK decrypt failed for {user_id}/{provider}; falling back")
+    return EMERGENT_LLM_KEY, "universal"
+
+
+async def _llm_call(user_id: str, provider: str, model: str, system: str,
+                    user_text: str, session_id: str) -> str:
+    """Make a single LLM call via emergentintegrations using BYOK if present."""
     from emergentintegrations.llm.chat import LlmChat, UserMessage
+    api_key, _source = await _resolve_provider_key(user_id, provider)
     chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
+        api_key=api_key,
         session_id=session_id,
         system_message=system,
     ).with_model(provider, model)
     resp = await chat.send_message(UserMessage(text=user_text))
     return resp if isinstance(resp, str) else str(resp)
+
+
+# ---------- SETTINGS / BYOK ----------
+
+@api.get("/settings/keys")
+async def list_keys(user: dict = Depends(get_current_user)):
+    docs = await db.user_provider_keys.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "ciphertext": 0}
+    ).to_list(20)
+    have = {d["provider"]: d for d in docs}
+    out = []
+    for prov in SUPPORTED_PROVIDERS:
+        if prov in have:
+            d = have[prov]
+            out.append({
+                "provider": prov,
+                "configured": True,
+                "masked": d.get("masked", ""),
+                "updated_at": d.get("updated_at"),
+            })
+        else:
+            out.append({"provider": prov, "configured": False, "masked": "", "updated_at": None})
+    return {"providers": out, "universal_key_available": bool(EMERGENT_LLM_KEY)}
+
+
+@api.put("/settings/keys")
+async def set_key(payload: dict, user: dict = Depends(get_current_user)):
+    provider = payload.get("provider", "")
+    api_key = (payload.get("api_key") or "").strip()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+    if not api_key or len(api_key) < 12:
+        raise HTTPException(status_code=400, detail="Invalid API key")
+    doc = {
+        "user_id": user["user_id"],
+        "provider": provider,
+        "ciphertext": encrypt_key(api_key),
+        "masked": mask(api_key),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.user_provider_keys.update_one(
+        {"user_id": user["user_id"], "provider": provider},
+        {"$set": doc},
+        upsert=True,
+    )
+    return {"ok": True, "provider": provider, "masked": doc["masked"]}
+
+
+@api.delete("/settings/keys/{provider}")
+async def delete_key(provider: str, user: dict = Depends(get_current_user)):
+    if provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+    await db.user_provider_keys.delete_one(
+        {"user_id": user["user_id"], "provider": provider}
+    )
+    return {"ok": True, "provider": provider}
 
 
 @api.post("/ai/chat")
@@ -570,7 +641,7 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
 
     try:
         reply = await _llm_call(
-            "gemini", "gemini-3-flash-preview",
+            user["user_id"], "gemini", "gemini-3-flash-preview",
             CHAT_PROMPT, user_text, f"{user['user_id']}-{conversation_id}",
         )
     except Exception as e:  # broad - emergentintegrations raises ChatError
@@ -625,7 +696,7 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     )
     try:
         refined = await _llm_call(
-            "openai", "gpt-5.2",
+            user["user_id"], "openai", "gpt-5.2",
             REFINE_PROMPT, user_text, f"{user['user_id']}-refine-{uuid.uuid4().hex[:6]}",
         )
     except Exception as e:
@@ -664,7 +735,7 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
     )
     try:
         raw = await _llm_call(
-            "anthropic", "claude-sonnet-4-5-20250929",
+            user["user_id"], "anthropic", "claude-sonnet-4-5-20250929",
             GOVERNANCE_PROMPT, user_text,
             f"{user['user_id']}-gov-{uuid.uuid4().hex[:6]}",
         )

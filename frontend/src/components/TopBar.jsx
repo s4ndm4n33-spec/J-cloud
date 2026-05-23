@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus } from "@phosphor-icons/react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
+import SettingsModal from "@/components/SettingsModal";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
@@ -12,6 +13,7 @@ export default function TopBar({
   const { signOut } = useAuth();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const score = gauntletStatus?.score ?? 5;
   const passColor = score >= 4 ? "var(--viridian)" : score >= 2 ? "var(--orange)" : "#FF2D55";
@@ -102,6 +104,14 @@ export default function TopBar({
       </button>
 
       <div className="h-6 w-px bg-cyan/15"></div>
+      <button
+        data-testid="settings-button"
+        onClick={() => setSettingsOpen(true)}
+        title="Settings · Provider keys"
+        className="text-alloy hover:text-cyan transition-colors"
+      >
+        <GearSix size={14} weight="bold" />
+      </button>
       <div className="flex items-center gap-2">
         {user?.picture ? (
           <img src={user.picture} alt={user.name} className="h-6 w-6 rounded-full" />
@@ -120,6 +130,7 @@ export default function TopBar({
           <Power size={14} weight="bold" />
         </button>
       </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
