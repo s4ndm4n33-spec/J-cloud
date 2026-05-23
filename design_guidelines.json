@@ -1,0 +1,121 @@
+{
+  "project_name": "Gauntlet DevSpace - Sovereign Shards",
+  "theme_and_archetype": {
+    "theme": "Dark",
+    "archetype": "4 (Swiss & High-Contrast - Tactical Command Center Adaptation)",
+    "vibe": "Military HUD, mission router, network integrity panels, glassmorphic dark panels with subtle cyan grid lines. Tactical, surgical, command-center aesthetic. Deterministic, Autonomous, Substrate."
+  },
+  "typography": {
+    "headlines": {
+      "family": "Exo 2, sans-serif",
+      "weights": ["400", "600", "700"],
+      "usage": "Headers, mission critical alerts, panel titles",
+      "style": "tracking-tight, uppercase for labels"
+    },
+    "body": {
+      "family": "IBM Plex Sans, sans-serif",
+      "weights": ["400", "500"],
+      "usage": "Standard UI text, chat panel, file tree"
+    },
+    "monospace": {
+      "family": "JetBrains Mono, monospace",
+      "weights": ["400", "700"],
+      "usage": "Code editor, terminal, HUD telemetry numbers, micro-stats, git hashes"
+    }
+  },
+  "colors": {
+    "background": {
+      "midnight": "#050709",
+      "steel": "#0B0F14"
+    },
+    "accent": {
+      "cyan": "#00D9FF",
+      "orange": "#FF6A1A",
+      "viridian": "#1F8F6B"
+    },
+    "text": {
+      "primary": "#E7ECF5",
+      "muted": "#7D8597"
+    }
+  },
+  "surface_strategies": {
+    "panels": "Deep midnight background (#050709) with 1px solid steel (#0B0F14) or translucent cyan borders (e.g., border-[#00D9FF]/20).",
+    "glassmorphism": "Used sparingly for modals/overlays (backdrop-blur-xl bg-[#050709]/80 border border-[#00D9FF]/30).",
+    "texture": "Apply a subtle SVG noise/grain overlay at 3% opacity globally over dark backgrounds.",
+    "corners": "Sharp edges, maximum 2px to 4px border radius. Never use pill shapes (rounded-full) for buttons.",
+    "selection_focus": "1px cyan inset ring (ring-1 ring-inset ring-[#00D9FF]). NEVER use browser default blue.",
+    "dividers": "Thin 1px cyan dividers with low opacity (border-[#00D9FF]/15)."
+  },
+  "animation_rules": {
+    "motion": "Deterministic and precise. No bouncy/spring effects.",
+    "duration": "instant to 180ms ease-out.",
+    "interactions": "Hover states should immediately highlight with a cyan tint or 1px border. Status changes should briefly flash a 1px cyan stroke."
+  },
+  "icons": {
+    "library": "@phosphor-icons/react",
+    "style": "Sharp, technical, line-based. Use icon glyphs (✓ / ✗ / ⚠) in Viridian/Orange/Alloy Gray for states, never emojis."
+  },
+  "media": {
+    "logos": [
+      {
+        "category": "brand_logo",
+        "url": "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png",
+        "description": "Angular shard 'S' emblem in steel-cyan gradient"
+      }
+    ],
+    "backgrounds": [
+      {
+        "category": "sign_in_bg",
+        "url": "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/1ba23dff4de414ed41b470a572571a7b1a20520a7d7f138c99771f44642f7d17.png",
+        "description": "Dark tactical HUD background with midnight steel palette and subtle cyan grids"
+      }
+    ]
+  },
+  "components": {
+    "sign_in_landing": {
+      "layout": "Centered mission-control login card over tactical_hud_bg.",
+      "elements": "Sovereign Shards logo, 'DEPLOY THE SHARD' CTA button (sharp, cyan border), Google OAuth button.",
+      "footer": "Brand pillars row: 'SOVEREIGN INFRASTRUCTURE · LOCAL AUTONOMY · VERIFIABLE EXECUTION' in tiny monospace.",
+      "slogans": "Include 'IF IT CAN'T PROVE INTEGRITY, IT HALTS.' as an overline."
+    },
+    "main_ide_shell": {
+      "top_bar": "Project switcher dropdown, Gauntlet Status indicator (5/5 dots in Viridian), Run/Stop buttons (sharp), Live Preview toggle, User avatar. Border bottom 1px steel.",
+      "left_rail": "Vertical icon stack (Files, Git, Search, Five Masters, AI Coworker). Active icon glows cyan.",
+      "file_tree": "Collapsible folders. Each file has a tiny Five Masters score badge (e.g., '5/5' in Viridian or '3/5' in Orange) aligned to the right.",
+      "editor_center": "Monaco editor area. Multi-tab bar at top. Each tab shows the filename and a mini-Gauntlet score.",
+      "right_panel": "AI Coworker. Tabs: Chat (Gemini) / Refine (GPT-5.2) / Gauntlet (Claude Sonnet 4.5) / Logs. IBM Plex Sans for chat bubbles, monospace for logs.",
+      "bottom_panel": "Split view: Integrated Terminal (xterm.js styled with JetBrains Mono, cyan prompt) and Problems panel. Resizable border."
+    },
+    "five_masters_panel": {
+      "layout": "Grid list of 5 named masters: Korotkevich, Torvalds, Carmack, Hamilton, Ritchie.",
+      "indicators": "Each has a pass/fail icon (✓ Viridian, ✗ Orange).",
+      "content": "Severity-color coded issue list below failed masters. 'RE-EVALUATE' ghost button with cyan text and 1px border."
+    },
+    "inline_ai_edit_modal": {
+      "trigger": "Cmd+K floating glass panel over editor.",
+      "style": "Glassmorphic (#050709/90), blurred, sharp cyan border.",
+      "stages": "1. Instruction input (cyan prompt). 2. Diff preview (Red/Green line backgrounds). 3. 'Gauntlet Review' verdict block. Apply/Reject sharp buttons."
+    },
+    "hard_block_modal": {
+      "trigger": "Destructive code detection.",
+      "style": "Full-screen amber/orange (#FF6A1A/10) interlock screen overlay. 2px solid #FF6A1A borders.",
+      "headline": "'INTEGRITY HALT — VERIFICATION REQUIRED' in Exo 2 Black, colored Orange.",
+      "content": "Password input field (sharp, red/orange focus ring), override log, hard-edged 'OVERRIDE' button."
+    },
+    "live_preview_pane": {
+      "layout": "Slide-in iframe on the right/center-right.",
+      "controls": "URL bar (read-only style), refresh icon, device toggle (desktop/mobile) in a compact top bar."
+    },
+    "git_panel": {
+      "layout": "Standard source control view but tactical.",
+      "elements": "Branches dropdown. Staged/Unstaged diff list. Commit message textarea (monospace). Push button."
+    },
+    "hud_adornments": {
+      "description": "Treat surface as mission control. Add thin cyan dividers, HUD tick marks in corners.",
+      "telemetry": "Micro-numbers in corners (e.g., 'UPTIME: 99.9%', 'AST: OK') using JetBrains Mono text-[10px] text-[#7D8597]."
+    }
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a `data-testid` attribute in kebab-case."
+  }
+}
