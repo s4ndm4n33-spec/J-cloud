@@ -539,24 +539,46 @@ def _build_context_block(payload: dict) -> str:
     return "\n\n".join(parts)
 
 
-async def _resolve_provider_key(user_id: str, provider: str) -> tuple[str, str]:
-    """Return (api_key, source). Prefer BYO key; fall back to Emergent Universal."""
+async def _resolve_byok(user_id: str, provider: str) -> Optional[str]:
+    """Return BYO key for provider, or None if not configured."""
     doc = await db.user_provider_keys.find_one(
         {"user_id": user_id, "provider": provider}, {"_id": 0}
     )
     if doc and doc.get("ciphertext"):
         try:
-            return decrypt_key(doc["ciphertext"]), "byok"
+            return decrypt_key(doc["ciphertext"])
         except (ValueError, TypeError):
-            log.warning(f"BYOK decrypt failed for {user_id}/{provider}; falling back")
-    return EMERGENT_LLM_KEY, "universal"
+            log.warning(f"BYOK decrypt failed for {user_id}/{provider}")
+    return None
 
 
-async def _llm_call(user_id: str, provider: str, model: str, system: str,
-                    user_text: str, session_id: str) -> str:
-    """Make a single LLM call via emergentintegrations using BYOK if present."""
+# Task chains: Universal first, then BYO of preferred provider, then BYO of others.
+# Each step: (source, provider, model). source = "universal" or "byok".
+TASK_CHAINS: dict[str, list[tuple[str, str, str]]] = {
+    "chat": [
+        ("universal", "gemini",    "gemini-3-flash-preview"),
+        ("byok",      "gemini",    "gemini-3-flash-preview"),
+        ("byok",      "openai",    "gpt-5.4-mini"),
+        ("byok",      "anthropic", "claude-haiku-4-5-20251001"),
+    ],
+    "refine": [
+        ("universal", "openai",    "gpt-5.2"),
+        ("byok",      "openai",    "gpt-5.2"),
+        ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
+        ("byok",      "gemini",    "gemini-3-flash-preview"),
+    ],
+    "governance": [
+        ("universal", "anthropic", "claude-sonnet-4-5-20250929"),
+        ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
+        ("byok",      "openai",    "gpt-5.4"),
+        ("byok",      "gemini",    "gemini-3.1-pro-preview"),
+    ],
+}
+
+
+async def _single_call(api_key: str, provider: str, model: str,
+                       system: str, user_text: str, session_id: str) -> str:
     from emergentintegrations.llm.chat import LlmChat, UserMessage
-    api_key, _source = await _resolve_provider_key(user_id, provider)
     chat = LlmChat(
         api_key=api_key,
         session_id=session_id,
@@ -564,6 +586,51 @@ async def _llm_call(user_id: str, provider: str, model: str, system: str,
     ).with_model(provider, model)
     resp = await chat.send_message(UserMessage(text=user_text))
     return resp if isinstance(resp, str) else str(resp)
+
+
+async def _chain_call(user_id: str, task: str, system: str, user_text: str,
+                      session_id: str, max_passes: int = 2
+                      ) -> tuple[str, dict]:
+    """Run the LLM call through the failover chain. Returns (reply, metadata).
+
+    Metadata: {success: bool, step_used: {...}, attempts: [...]}.
+    """
+    chain = TASK_CHAINS.get(task, TASK_CHAINS["chat"])
+    attempts: list[dict] = []
+
+    for pass_idx in range(max_passes):
+        for source, provider, model in chain:
+            if source == "universal":
+                api_key = EMERGENT_LLM_KEY
+            else:
+                api_key = await _resolve_byok(user_id, provider)
+                if not api_key:
+                    attempts.append({"pass": pass_idx, "source": source,
+                                     "provider": provider, "model": model,
+                                     "status": "skipped", "reason": "byok-missing"})
+                    continue
+            try:
+                reply = await _single_call(
+                    api_key, provider, model, system, user_text,
+                    f"{session_id}-{source}-{provider}",
+                )
+                attempts.append({"pass": pass_idx, "source": source,
+                                 "provider": provider, "model": model,
+                                 "status": "ok"})
+                return reply, {
+                    "success": True,
+                    "step_used": {"source": source, "provider": provider, "model": model},
+                    "attempts": attempts,
+                }
+            except Exception as e:  # noqa: BLE001  emergentintegrations.ChatError, network, etc.
+                short = str(e)[:280]
+                log.warning(f"chain[{task}] {source}/{provider}/{model} failed: {short}")
+                attempts.append({"pass": pass_idx, "source": source,
+                                 "provider": provider, "model": model,
+                                 "status": "error", "reason": short})
+                continue
+    # All passes exhausted
+    return "", {"success": False, "step_used": None, "attempts": attempts}
 
 
 # ---------- SETTINGS / BYOK ----------
@@ -624,13 +691,12 @@ async def delete_key(provider: str, user: dict = Depends(get_current_user)):
 
 @api.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
-    """Gemini-powered chat with project context."""
+    """Gemini-first chat with BYOK failover chain."""
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
     ctx = _build_context_block(payload)
     user_text = f"{ctx}\n\n[USER]\n{message}" if ctx else message
 
-    # Persist user msg
     await db.messages.insert_one({
         "conversation_id": conversation_id,
         "user_id": user["user_id"],
@@ -639,17 +705,15 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         "ts": datetime.now(timezone.utc).isoformat(),
     })
 
-    try:
-        reply = await _llm_call(
-            user["user_id"], "gemini", "gemini-3-flash-preview",
-            CHAT_PROMPT, user_text, f"{user['user_id']}-{conversation_id}",
-        )
-    except Exception as e:  # broad - emergentintegrations raises ChatError
-        log.exception("gemini chat failed")
+    reply, meta = await _chain_call(
+        user["user_id"], "chat", CHAT_PROMPT, user_text,
+        f"{user['user_id']}-{conversation_id}",
+    )
+    if not meta["success"]:
         reply = (
-            "// J:OFFLINE — LLM provider returned an error.\n"
-            f"// detail: {e}\n"
-            "// (If 'Budget exceeded': top up at Profile → Universal Key → Add Balance.)\n"
+            "// J:OFFLINE — entire LLM failover chain exhausted.\n"
+            "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
+            f"// last attempts: {len(meta['attempts'])}"
         )
 
     await db.messages.insert_one({
@@ -658,8 +722,9 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         "role": "assistant",
         "content": reply,
         "ts": datetime.now(timezone.utc).isoformat(),
+        "meta": meta,
     })
-    return {"conversation_id": conversation_id, "reply": reply}
+    return {"conversation_id": conversation_id, "reply": reply, "meta": meta}
 
 
 @api.get("/ai/chat/history")
@@ -694,16 +759,16 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
         f"[ORIGINAL CODE]\n{code}\n\n"
         f"Return ONLY the refined code. No fences. No prose."
     )
-    try:
-        refined = await _llm_call(
-            user["user_id"], "openai", "gpt-5.2",
-            REFINE_PROMPT, user_text, f"{user['user_id']}-refine-{uuid.uuid4().hex[:6]}",
-        )
-    except Exception as e:
-        log.exception("gpt refine failed")
-        raise HTTPException(status_code=502, detail=f"LLM error: {e}") from e
-
-    refined = _strip_code_fences(refined)
+    reply, meta = await _chain_call(
+        user["user_id"], "refine", REFINE_PROMPT, user_text,
+        f"{user['user_id']}-refine-{uuid.uuid4().hex[:6]}",
+    )
+    if not meta["success"]:
+        raise HTTPException(status_code=502, detail={
+            "message": "LLM failover chain exhausted",
+            "attempts": meta["attempts"],
+        })
+    refined = _strip_code_fences(reply)
 
     # Run AST gauntlet on the refined output
     ast_report = fm_evaluate(refined, language).to_dict()
@@ -717,6 +782,7 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
             {"pattern": m.pattern, "line": m.line, "reason": m.reason,
              "severity": m.severity, "snippet": m.snippet} for m in danger
         ],
+        "meta": meta,
     }
 
 
@@ -733,23 +799,20 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
         f"[DETERMINISTIC AST REPORT]\n{json.dumps(ast_report, indent=2)}\n\n"
         f"Return strict JSON only as specified."
     )
-    try:
-        raw = await _llm_call(
-            user["user_id"], "anthropic", "claude-sonnet-4-5-20250929",
-            GOVERNANCE_PROMPT, user_text,
-            f"{user['user_id']}-gov-{uuid.uuid4().hex[:6]}",
-        )
-    except Exception as e:
-        log.exception("claude governance failed")
-        # Fall back to AST report only
+    raw, meta = await _chain_call(
+        user["user_id"], "governance", GOVERNANCE_PROMPT, user_text,
+        f"{user['user_id']}-gov-{uuid.uuid4().hex[:6]}",
+    )
+    if not meta["success"]:
         return {
             "ast_report": ast_report,
             "llm_verdict": {
                 "verdict": "PASS" if ast_report["score"] == 5 else "FAIL",
-                "summary": f"AST-only fallback (LLM unavailable): {e}",
+                "summary": "AST-only fallback (LLM chain exhausted).",
                 "masters": ast_report["masters"],
                 "fixes": [iss["message"] for iss in ast_report["issues"][:5]],
             },
+            "meta": meta,
         }
 
     # Pull JSON out of the response
@@ -765,10 +828,29 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
         parsed = {"verdict": "FAIL", "summary": raw[:200],
                   "masters": ast_report["masters"], "fixes": []}
 
-    return {"ast_report": ast_report, "llm_verdict": parsed}
+    return {"ast_report": ast_report, "llm_verdict": parsed, "meta": meta}
 
 
 # ---------- HEALTH ----------
+
+@api.get("/ai/chain")
+async def ai_chain(user: dict = Depends(get_current_user)):
+    """Show the resolved failover chain for each task (which steps will actually run)."""
+    out: dict[str, list[dict]] = {}
+    for task, steps in TASK_CHAINS.items():
+        resolved = []
+        for source, provider, model in steps:
+            if source == "universal":
+                runnable = bool(EMERGENT_LLM_KEY)
+            else:
+                runnable = bool(await _resolve_byok(user["user_id"], provider))
+            resolved.append({
+                "source": source, "provider": provider, "model": model,
+                "runnable": runnable,
+            })
+        out[task] = resolved
+    return {"chains": out}
+
 
 @api.get("/")
 async def root():

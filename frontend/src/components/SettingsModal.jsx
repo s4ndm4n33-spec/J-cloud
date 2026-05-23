@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, Key, Trash, CheckCircle, CircleNotch } from "@phosphor-icons/react";
+import { X, Key, Trash, CheckCircle, CircleNotch, Stack } from "@phosphor-icons/react";
 import axios from "axios";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
@@ -8,25 +8,28 @@ const PROVIDER_META = {
   anthropic: { label: "Anthropic", note: "Powers Claude Sonnet 4.5 governance",  url: "https://console.anthropic.com/settings/keys" },
   gemini:    { label: "Google Gemini", note: "Powers Gemini chat",               url: "https://aistudio.google.com/app/apikey" },
 };
+const TASK_LABEL = { chat: "Chat", refine: "Refine", governance: "Gauntlet" };
 
 export default function SettingsModal({ onClose }) {
   const [providers, setProviders] = useState([]);
   const [universalKey, setUniversalKey] = useState(true);
+  const [chains, setChains] = useState({});
   const [drafts, setDrafts] = useState({});
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState(null);
 
   async function refresh() {
-    const r = await axios.get(`${API}/settings/keys`, { withCredentials: true });
-    setProviders(r.data.providers);
-    setUniversalKey(r.data.universal_key_available);
+    const [keysResp, chainResp] = await Promise.all([
+      axios.get(`${API}/settings/keys`, { withCredentials: true }),
+      axios.get(`${API}/ai/chain`, { withCredentials: true }),
+    ]);
+    setProviders(keysResp.data.providers);
+    setUniversalKey(keysResp.data.universal_key_available);
+    setChains(chainResp.data.chains);
   }
   useEffect(() => { refresh(); }, []);
 
-  function flash(msg) {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  }
+  function flash(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
 
   async function save(provider) {
     const api_key = (drafts[provider] || "").trim();
@@ -52,16 +55,16 @@ export default function SettingsModal({ onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-midnight/80 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[55] flex items-center justify-center bg-midnight/80 backdrop-blur-sm p-4" onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-2xl panel tick-corner relative"
+        className="w-full max-w-3xl panel tick-corner relative max-h-[90vh] overflow-auto scrollbar-thin"
         data-testid="settings-modal"
       >
-        <div className="flex items-center justify-between px-5 py-3 border-b border-cyan/15">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-cyan/15 sticky top-0 bg-midnight z-10">
           <div className="flex items-center gap-2">
             <Key size={14} className="text-cyan" weight="fill" />
-            <div className="font-display tracking-[0.25em] text-xs text-cyan">PROVIDER KEYS</div>
+            <div className="font-display tracking-[0.25em] text-xs text-cyan">PROVIDER KEYS · FAILOVER CHAIN</div>
           </div>
           <button onClick={onClose} className="text-alloy hover:text-orange" data-testid="settings-close">
             <X size={14} weight="bold" />
@@ -70,8 +73,9 @@ export default function SettingsModal({ onClose }) {
 
         <div className="px-5 py-4 space-y-4">
           <div className="font-mono text-[0.7rem] text-alloy leading-relaxed">
-            Bring your own keys. J prefers your keys over the Emergent Universal Key when present.
-            Keys are encrypted at rest (Fernet) and never leave your workspace.
+            Emergent Universal Key runs first. If it fails, your provider keys engage in the order
+            below — same provider, then cross-provider — until one succeeds. Keys are encrypted at
+            rest (Fernet) and never leave your workspace.
           </div>
 
           <div
@@ -86,7 +90,7 @@ export default function SettingsModal({ onClose }) {
                 Emergent Universal Key: {universalKey ? "available" : "missing"}
               </span>
             </div>
-            <span className="font-mono text-[0.65rem] text-alloy">fallback</span>
+            <span className="font-mono text-[0.65rem] text-cyan">PRIMARY</span>
           </div>
 
           {providers.map((p) => {
@@ -95,9 +99,7 @@ export default function SettingsModal({ onClose }) {
               <div key={p.provider} className="border border-cyan/15 p-3" data-testid={`provider-${p.provider}`}>
                 <div className="flex items-center justify-between mb-2">
                   <div>
-                    <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">
-                      {meta.label}
-                    </div>
+                    <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">{meta.label}</div>
                     <div className="font-mono text-[0.65rem] text-alloy">// {meta.note}</div>
                   </div>
                   {p.configured ? (
@@ -111,9 +113,7 @@ export default function SettingsModal({ onClose }) {
                         className="text-alloy hover:text-orange"
                         title="Remove"
                         data-testid={`provider-${p.provider}-remove`}
-                      >
-                        <Trash size={14} />
-                      </button>
+                      ><Trash size={14} /></button>
                     </div>
                   ) : (
                     <span className="font-mono text-[0.65rem] text-alloy">// not configured</span>
@@ -144,12 +144,45 @@ export default function SettingsModal({ onClose }) {
                   target="_blank"
                   rel="noreferrer"
                   className="font-mono text-[0.6rem] text-cyan hover:underline mt-1 inline-block"
-                >
-                  {`> get a key at ${meta.url.replace(/^https?:\/\//, "")}`}
-                </a>
+                >{`> get a key at ${meta.url.replace(/^https?:\/\//, "")}`}</a>
               </div>
             );
           })}
+
+          <div className="border border-cyan/15 p-3" data-testid="chain-resolved">
+            <div className="flex items-center gap-2 mb-3">
+              <Stack size={14} className="text-cyan" weight="fill" />
+              <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">RESOLVED CHAIN</div>
+              <div className="font-mono text-[0.6rem] text-alloy ml-2">// per-task failover order</div>
+            </div>
+            {Object.entries(chains).map(([task, steps]) => (
+              <div key={task} className="mb-3 last:mb-0" data-testid={`chain-${task}`}>
+                <div className="font-mono text-[0.7rem] text-cyan mb-1">// {TASK_LABEL[task] || task}</div>
+                <div className="space-y-1">
+                  {steps.map((s, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 font-mono text-[0.7rem]"
+                      style={{ opacity: s.runnable ? 1 : 0.4 }}
+                    >
+                      <span
+                        className="w-2 h-2 inline-block"
+                        style={{ background: s.runnable ? "var(--viridian)" : "rgba(125,133,151,0.3)" }}
+                      />
+                      <span className="text-alloy w-6">#{i + 1}</span>
+                      <span className="text-cyan w-20">{s.source}</span>
+                      <span className="text-gridwhite w-20">{s.provider}</span>
+                      <span className="text-alloy flex-1 truncate">{s.model}</span>
+                      <span
+                        className="text-[0.6rem]"
+                        style={{ color: s.runnable ? "var(--viridian)" : "var(--alloy-gray)" }}
+                      >{s.runnable ? "ARMED" : "SKIP"}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
 
         {toast && (

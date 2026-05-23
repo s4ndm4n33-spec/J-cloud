@@ -20,7 +20,12 @@
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
 ## Implemented (2026-05-23)
-- **BYO-Key Settings panel** — Top-bar gear icon opens a modal where users paste their own OpenAI / Anthropic / Gemini keys. Keys are encrypted at rest with Fernet (`core/keyvault.py`), masked in the UI, and resolved before every LLM call. Falls back to the Emergent Universal Key when no per-user key is configured. Endpoints: `GET/PUT/DELETE /api/settings/keys`.
+- **LLM Failover Chain** — Universal Key always runs first as primary. If it fails (budget, rate-limit, model down), J automatically cascades through the user's BYO keys: same provider first, then cross-provider, until one succeeds. Per-task chains:
+  - **Chat**: Universal/gemini-3-flash → BYO gemini-3-flash → BYO openai gpt-5.4-mini → BYO anthropic claude-haiku-4.5
+  - **Refine**: Universal/gpt-5.2 → BYO openai gpt-5.2 → BYO anthropic claude-sonnet-4.5 → BYO gemini-3-flash
+  - **Governance**: Universal/claude-sonnet-4.5 → BYO anthropic claude-sonnet-4.5 → BYO openai gpt-5.4 → BYO gemini-3.1-pro
+  - 2 full passes before declaring offline. Every attempt logged in response `meta.attempts`. Endpoint `GET /api/ai/chain` returns the resolved chain (ARMED/SKIP per step). The AI Coworker chat bubbles show "via universal/gemini" badges (and "· 2 fallbacks" when the chain had to step through).
+- **BYO-Key Settings panel** — Top-bar gear icon opens a modal where users paste their own OpenAI / Anthropic / Gemini keys. Keys encrypted at rest with Fernet (`core/keyvault.py`), masked in UI. Modal shows the **RESOLVED CHAIN** section listing every step per task with ARMED/SKIP status. Endpoints: `GET/PUT/DELETE /api/settings/keys`.
 - Emergent Google OAuth (`/api/auth/session`, `/api/auth/me`, `/api/auth/logout`) with httpOnly cookies + Bearer fallback.
 - Projects: list/create with auto-seeded `README.md`, `main.py`, `index.html`, `.gitignore` + `git init`.
 - File CRUD (path-traversal guarded), tree walk excluding `.git`/`node_modules`/`__pycache__`/`.venv`.

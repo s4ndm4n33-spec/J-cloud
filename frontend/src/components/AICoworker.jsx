@@ -94,7 +94,7 @@ function ChatTab({ project, activeTab, tree }) {
       };
       const r = await aiChat(payload);
       setConversationId(r.conversation_id);
-      setMessages((prev) => [...prev, { role: "assistant", content: r.reply }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `// LLM error: ${e?.response?.data?.detail || e.message}` }]);
     } finally {
@@ -107,8 +107,16 @@ function ChatTab({ project, activeTab, tree }) {
       <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-3 space-y-3" data-testid="chat-messages">
         {messages.map((m, i) => (
           <div key={i} className={`text-sm ${m.role === "user" ? "text-gridwhite" : m.role === "system" ? "text-alloy" : "text-gridwhite"}`}>
-            <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5">
-              {m.role === "user" ? "// YOU" : m.role === "system" ? "// J:SYSTEM" : "// J"}
+            <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5 flex items-center gap-2">
+              <span>{m.role === "user" ? "// YOU" : m.role === "system" ? "// J:SYSTEM" : "// J"}</span>
+              {m.meta?.step_used && (
+                <span className="text-alloy" data-testid="chat-served-by">
+                  · via {m.meta.step_used.source}/{m.meta.step_used.provider}
+                  {m.meta.attempts?.length > 1 && (
+                    <span className="text-orange"> · {m.meta.attempts.length - 1} fallback{m.meta.attempts.length > 2 ? "s" : ""}</span>
+                  )}
+                </span>
+              )}
             </div>
             <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
           </div>
