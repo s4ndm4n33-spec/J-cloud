@@ -593,10 +593,12 @@ async def _chain_call(user_id: str, task: str, system: str, user_text: str,
                       ) -> tuple[str, dict]:
     """Run the LLM call through the failover chain. Returns (reply, metadata).
 
-    Metadata: {success: bool, step_used: {...}, attempts: [...]}.
+    Metadata: {success: bool, step_used: {...}, attempts: [...], total_ms: int}.
     """
+    import time as _time
     chain = TASK_CHAINS.get(task, TASK_CHAINS["chat"])
     attempts: list[dict] = []
+    chain_started = _time.perf_counter()
 
     for pass_idx in range(max_passes):
         for source, provider, model in chain:
@@ -607,30 +609,63 @@ async def _chain_call(user_id: str, task: str, system: str, user_text: str,
                 if not api_key:
                     attempts.append({"pass": pass_idx, "source": source,
                                      "provider": provider, "model": model,
-                                     "status": "skipped", "reason": "byok-missing"})
+                                     "status": "skipped", "reason": "byok-missing",
+                                     "ms": 0})
                     continue
+            t0 = _time.perf_counter()
             try:
                 reply = await _single_call(
                     api_key, provider, model, system, user_text,
                     f"{session_id}-{source}-{provider}",
                 )
+                ms = int((_time.perf_counter() - t0) * 1000)
                 attempts.append({"pass": pass_idx, "source": source,
                                  "provider": provider, "model": model,
-                                 "status": "ok"})
-                return reply, {
+                                 "status": "ok", "ms": ms})
+                meta = {
                     "success": True,
                     "step_used": {"source": source, "provider": provider, "model": model},
                     "attempts": attempts,
+                    "total_ms": int((_time.perf_counter() - chain_started) * 1000),
+                    "task": task,
                 }
-            except Exception as e:  # noqa: BLE001  emergentintegrations.ChatError, network, etc.
+                await _record_telemetry(user_id, meta)
+                return reply, meta
+            except Exception as e:  # noqa: BLE001
+                ms = int((_time.perf_counter() - t0) * 1000)
                 short = str(e)[:280]
-                log.warning(f"chain[{task}] {source}/{provider}/{model} failed: {short}")
+                log.warning(f"chain[{task}] {source}/{provider}/{model} failed in {ms}ms: {short}")
                 attempts.append({"pass": pass_idx, "source": source,
                                  "provider": provider, "model": model,
-                                 "status": "error", "reason": short})
+                                 "status": "error", "reason": short, "ms": ms})
                 continue
-    # All passes exhausted
-    return "", {"success": False, "step_used": None, "attempts": attempts}
+    meta = {
+        "success": False, "step_used": None, "attempts": attempts,
+        "total_ms": int((_time.perf_counter() - chain_started) * 1000),
+        "task": task,
+    }
+    await _record_telemetry(user_id, meta)
+    return "", meta
+
+
+async def _record_telemetry(user_id: str, meta: dict) -> None:
+    """Persist a chain-call event for the telemetry strip."""
+    fallbacks = max(0, len([a for a in meta.get("attempts", [])
+                            if a.get("status") in ("error", "skipped")]))
+    doc = {
+        "user_id": user_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "task": meta.get("task"),
+        "success": meta.get("success"),
+        "step_used": meta.get("step_used"),
+        "total_ms": meta.get("total_ms", 0),
+        "fallbacks": fallbacks,
+        "attempts_count": len(meta.get("attempts", [])),
+    }
+    try:
+        await db.llm_telemetry.insert_one(doc)
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"telemetry insert failed: {e}")
 
 
 # ---------- SETTINGS / BYOK ----------
@@ -832,6 +867,16 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
 
 
 # ---------- HEALTH ----------
+
+@api.get("/ai/telemetry")
+async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
+    """Return the last N LLM chain calls for the current user."""
+    limit = max(1, min(int(limit), 50))
+    docs = await db.llm_telemetry.find(
+        {"user_id": user["user_id"]}, {"_id": 0}
+    ).sort("ts", -1).to_list(limit)
+    return {"events": docs}
+
 
 @api.get("/ai/chain")
 async def ai_chain(user: dict = Depends(get_current_user)):

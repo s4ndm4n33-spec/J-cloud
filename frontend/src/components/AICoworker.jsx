@@ -18,7 +18,7 @@ function truncateTree(tree, depth = 0, lines = []) {
   return lines;
 }
 
-export default function AICoworker({ project, activeTab, tree, onScoreUpdate, onApplyRefined }) {
+export default function AICoworker({ project, activeTab, tree, onScoreUpdate, onApplyRefined, onAICall }) {
   const [tab, setTab] = useState("chat");
 
   return (
@@ -46,16 +46,17 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
       </div>
 
       <div className="flex-1 min-h-0">
-        {tab === "chat" && <ChatTab project={project} activeTab={activeTab} tree={tree} />}
+        {tab === "chat" && <ChatTab project={project} activeTab={activeTab} tree={tree} onAICall={onAICall} />}
         {tab === "refine" && (
           <RefineTab
             activeTab={activeTab}
             onApplyRefined={onApplyRefined}
             onScoreUpdate={onScoreUpdate}
+            onAICall={onAICall}
           />
         )}
         {tab === "gauntlet" && (
-          <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} />
+          <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} onAICall={onAICall} />
         )}
         {tab === "logs" && <LogsTab />}
       </div>
@@ -63,7 +64,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
   );
 }
 
-function ChatTab({ project, activeTab, tree }) {
+function ChatTab({ project, activeTab, tree, onAICall }) {
   const [messages, setMessages] = useState([
     { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
   ]);
@@ -95,6 +96,7 @@ function ChatTab({ project, activeTab, tree }) {
       const r = await aiChat(payload);
       setConversationId(r.conversation_id);
       setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
+      onAICall?.();
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `// LLM error: ${e?.response?.data?.detail || e.message}` }]);
     } finally {
@@ -148,7 +150,7 @@ function ChatTab({ project, activeTab, tree }) {
   );
 }
 
-function RefineTab({ activeTab, onApplyRefined, onScoreUpdate }) {
+function RefineTab({ activeTab, onApplyRefined, onScoreUpdate, onAICall }) {
   const [instruction, setInstruction] = useState("");
   const [refined, setRefined] = useState("");
   const [astReport, setAstReport] = useState(null);
@@ -166,6 +168,7 @@ function RefineTab({ activeTab, onApplyRefined, onScoreUpdate }) {
       setRefined(r.refined);
       setAstReport(r.ast_report);
       onScoreUpdate(r.ast_report, r.ast_report.issues.length);
+      onAICall?.();
     } catch (e) {
       setRefined(`// ERROR: ${e?.response?.data?.detail || e.message}`);
     } finally {
@@ -206,7 +209,7 @@ function RefineTab({ activeTab, onApplyRefined, onScoreUpdate }) {
   );
 }
 
-function GauntletTab({ activeTab, onScoreUpdate }) {
+function GauntletTab({ activeTab, onScoreUpdate, onAICall }) {
   const [astReport, setAstReport] = useState(null);
   const [verdict, setVerdict] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -230,6 +233,7 @@ function GauntletTab({ activeTab, onScoreUpdate }) {
       setAstReport(r.ast_report);
       setVerdict(r.llm_verdict);
       onScoreUpdate(r.ast_report, r.ast_report.issues.length);
+      onAICall?.();
     } catch (e) {
       setVerdict({ verdict: "FAIL", summary: e?.response?.data?.detail || e.message, masters: [], fixes: [] });
     } finally { setBusy(false); }

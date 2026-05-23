@@ -14,6 +14,7 @@ import GitPanel from "@/components/GitPanel";
 import LivePreview from "@/components/LivePreview";
 import InlineEditModal from "@/components/InlineEditModal";
 import HardBlockModal from "@/components/HardBlockModal";
+import ChainTelemetry from "@/components/ChainTelemetry";
 
 export default function IDE() {
   const { user } = useAuth();
@@ -30,6 +31,7 @@ export default function IDE() {
   const [gauntletStatus, setGauntletStatus] = useState({ score: 5, issues: 0 });
 
   const editorRef = useRef(null);
+  const telemetryRef = useRef(null);
 
   // Load projects on mount
   useEffect(() => {
@@ -240,6 +242,7 @@ export default function IDE() {
             tree={tree}
             onScoreUpdate={setActiveTabScore}
             onApplyRefined={(code) => updateTabContent(activeTab, code)}
+            onAICall={() => telemetryRef.current?.refresh()}
           />
         </div>
 
@@ -252,6 +255,8 @@ export default function IDE() {
           />
         )}
       </div>
+
+      <ChainTelemetry ref={telemetryRef} />
 
       {inlineOpen && activeTabObj && (
         <InlineEditModal
