@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge } from "@phosphor-icons/react";
 import { aiChat, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
+import AuditPanel from "@/components/AuditPanel";
 
 const TABS = [
-  { key: "chat", label: "CHAT", model: "GEMINI 3.1", Icon: PaperPlaneTilt },
+  { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
   { key: "refine", label: "REFINE", model: "GPT-5.2", Icon: Sparkle },
   { key: "gauntlet", label: "GAUNTLET", model: "CLAUDE 4.5", Icon: ShieldCheck },
+  { key: "audit", label: "AUDIT", model: "/100", Icon: Gauge },
   { key: "logs", label: "LOGS", model: "TRACE", Icon: Pulse },
 ];
 
@@ -23,7 +25,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
 
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">
-      <div className="flex items-stretch border-b border-cyan/10 bg-midnight">
+      <div className="flex items-stretch border-b border-cyan/10 bg-midnight overflow-x-auto scrollbar-thin">
         {TABS.map((t) => {
           const active = tab === t.key;
           return (
@@ -31,7 +33,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
               key={t.key}
               data-testid={`ai-tab-${t.key}`}
               onClick={() => setTab(t.key)}
-              className={`flex-1 flex flex-col items-center justify-center py-2 gap-0.5 ${
+              className={`flex-1 min-w-[5rem] flex flex-col items-center justify-center py-2 gap-0.5 ${
                 active ? "text-cyan border-b border-cyan bg-steel" : "text-alloy hover:text-gridwhite"
               }`}
             >
@@ -58,6 +60,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
         {tab === "gauntlet" && (
           <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} onAICall={onAICall} />
         )}
+        {tab === "audit" && <AuditPanel project={project} onAICall={onAICall} />}
         {tab === "logs" && <LogsTab />}
       </div>
     </div>

@@ -77,3 +77,69 @@ export async function aiRefine(payload) {
 export async function aiGovernance(payload) {
   return (await client.post("/ai/governance", payload)).data;
 }
+
+// ----- GitHub -----
+export async function githubStatus() {
+  return (await client.get("/github/auth")).data;
+}
+export async function githubConnectPAT(token) {
+  return (await client.post("/github/auth", { token })).data;
+}
+export async function githubDisconnect() {
+  return (await client.delete("/github/auth")).data;
+}
+export async function githubRepos(page = 1) {
+  return (await client.get("/github/repos", { params: { page } })).data;
+}
+export async function githubClone(payload) {
+  return (await client.post("/github/clone", payload)).data;
+}
+export async function githubCreateRepo(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/github/create`, payload)).data;
+}
+export async function githubLink(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/github/link`, payload)).data;
+}
+export async function githubPush(project_id, branch) {
+  return (await client.post(`/projects/${project_id}/github/push`, { branch })).data;
+}
+export async function githubPull(project_id, branch) {
+  return (await client.post(`/projects/${project_id}/github/pull`, { branch })).data;
+}
+export async function githubPR(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/github/pr`, payload)).data;
+}
+
+// ----- Audit -----
+export async function projectAudit(project_id) {
+  return (await client.get(`/projects/${project_id}/audit`)).data;
+}
+
+// ----- Upload / Download -----
+export async function uploadFile(project_id, file, path) {
+  const fd = new FormData();
+  fd.append("file", file);
+  return (
+    await client.post(`/projects/${project_id}/upload`, fd, {
+      params: { path: path || "" },
+      headers: { "Content-Type": "multipart/form-data" },
+    })
+  ).data;
+}
+export function downloadUrl(project_id, path) {
+  return `${API}/projects/${project_id}/download?path=${encodeURIComponent(path)}`;
+}
+export function downloadZipUrl(project_id) {
+  return `${API}/projects/${project_id}/download_zip`;
+}
+
+// ----- Agents -----
+export async function listAgents() {
+  return (await client.get("/agents")).data;
+}
+export async function createAgent(payload) {
+  return (await client.post("/agents", payload)).data;
+}
+export async function deleteAgent(agent_id) {
+  return (await client.delete(`/agents/${agent_id}`)).data;
+}

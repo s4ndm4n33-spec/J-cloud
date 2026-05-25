@@ -1,0 +1,42 @@
+{
+  "summary": "Iter2 full-suite testing of GitHub integration, .gauntletignore seeding, 100-point audit, file upload/download, BYO agents, plus frontend AUDIT tab + GitHub panel + mobile shell. Backend: 31/31 pytest passing (16 new iter2 + 15 iter1 regression). Frontend: /ide loads clean with valid session cookie, no console errors, no duplicate-tab warning (iter1 fix landed), AUDIT tab renders 71/B score with all 7 breakdown bars and 4 recommendations, GitHub panel shows CONNECT TOKEN button + opens PAT form, mobile dock (414x800) toggles FILES/TERM/J drawers and scrim closes drawer on outside tap.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/projects/{id}/audit", "issue": "Recommendations only carry 'target_file' for the 'five_masters' category. The Five Masters scoring counts only error-severity issues toward score reduction, so 'warning' issues like range(len) (iter1 finding) leave ast_pts at 40/40 and no five_masters rec is emitted — meaning the audit's code-level 'PROPOSE FIX' affordance is never triggered for warning-only smells. Frontend can still show non-targeted recs (docs/tests/hygiene) but those have no target_file and cannot be auto-refined.", "priority": "MEDIUM"},
+      {"endpoint": "/api/projects/{id}/upload", "issue": "Upload accepts any binary, but audit's file_count only counts CODE_EXTS (.py/.js/.ts/...). Uploading a .txt/.md will not increment file_count. Consider clarifying file_count semantics in API docs or counting all non-ignored files.", "priority": "LOW"}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Mobile bottom dock", "issues": ["Dock right-padding (pr-28) leaves a gap behind the docked 'Made with Emergent' watermark — intentional but visually crowds the J button. Confirm with design."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter2_features.py",
+    "/app/backend/tests/test_gauntlet_devspace.py",
+    "/app/test_reports/pytest/iter2_results.xml"
+  ],
+  "action_items": [
+    "Decide whether 'warning'-severity Five Masters issues should reduce the score and emit a five_masters recommendation with target_file (so PROPOSE FIX becomes reachable for range(len)-style smells). Same root cause as iter1's korotkevich finding.",
+    "(Optional) Document or normalise file_count semantics (code files vs all files) since the upload feature accepts arbitrary binaries."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 1237 lines — exceeds the 700-line guideline. Mixes auth, projects, files, governance, terminal, git, AI, GitHub, audit, upload, agents. Strongly recommend splitting into routers: github_router, projects_router, agents_router, audit_router, ai_router.",
+    "audit_project() in scoring.py reads every file twice (once for Five Masters, once for destructive scan). For larger workspaces this doubles I/O; cache file text per pass.",
+    "/api/projects/{id}/upload uses path query param + multipart; if path is supplied with traversal segments safe_join must guard against ../ (verify in safe_join). Add an explicit max-upload-bytes check (no Content-Length cap visible).",
+    "scrim closes on outside tap; correctly wired. iter1 duplicate-README-tab key warning is no longer present — fix verified in this run."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter2_features.py"
+  ],
+  "success_rate": {"backend": "100% (16/16 iter2 + 15/15 iter1 regression)", "frontend": "100% (audit, github connect form, mobile drawers + scrim all green; no console errors)"},
+  "test_credentials": "Bearer test_session_devspace_001 / override password integrity-halt-override (see /app/memory/test_credentials.md).",
+  "seed_data_creation": "Tests auto-create TEST_iter2 project and clean up TEST_* agents at start of each run. Re-uses user_test_devspace seeded in iter1.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression at /app/backend/tests/ now covers iter1 + iter2 (31 tests). All endpoints listed in the iter2 review pass status + payload assertions. GitHub clone of sovereign-shards intentionally NOT tested (no valid PAT, per agent note). Mobile shell verified at 414x800: dock toggles FILES/TERM/J, scrim closes drawer on outside-tap. Audit's target_file affordance only fires when Five Masters drops below 40/40 — note for any frontend test asserting PROPOSE FIX button visibility.",
+  "rca_of_the_issue": "Audit-recommendation target_file gap: scoring.py only emits five_masters recs (with target_file) when ast_pts < 40. fivemasters.evaluate() only deducts score for error-severity findings, so warning-tier smells (e.g. for-i-in-range(len)) cap at ast_pts == 40 even with multiple files flagged. Fix: drop weighted score per warning (e.g., 0.5/issue) inside scoring.py, OR always emit target_file recs for the worst-scoring files when their per-file issue_count > 0 regardless of overall ast_pts."
+}

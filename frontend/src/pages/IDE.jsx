@@ -10,7 +10,7 @@ import EditorPane from "@/components/EditorPane";
 import AICoworker from "@/components/AICoworker";
 import TerminalPane from "@/components/TerminalPane";
 import ProblemsPanel from "@/components/ProblemsPanel";
-import GitPanel from "@/components/GitPanel";
+import GitHubPanel from "@/components/GitHubPanel";
 import LivePreview from "@/components/LivePreview";
 import InlineEditModal from "@/components/InlineEditModal";
 import HardBlockModal from "@/components/HardBlockModal";
@@ -29,6 +29,15 @@ export default function IDE() {
   const [inlineOpen, setInlineOpen] = useState(false);
   const [hardBlock, setHardBlock] = useState(null); // { matches, intent, onConfirm(token) }
   const [gauntletStatus, setGauntletStatus] = useState({ score: 5, issues: 0 });
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 900);
+  // mobile drawer: null | "left" | "right" | "bottom"
+  const [mobileDrawer, setMobileDrawer] = useState(null);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 900);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const editorRef = useRef(null);
   const telemetryRef = useRef(null);
@@ -146,21 +155,51 @@ export default function IDE() {
         onTogglePreview={() => setPreviewOpen((v) => !v)}
       />
 
-      <div className="flex-1 flex min-h-0">
-        <LeftRail active={leftView} onChange={setLeftView} />
+      <div className="flex-1 flex min-h-0 relative">
+        {!isMobile && <LeftRail active={leftView} onChange={setLeftView} />}
 
-        {/* Left panel: files / git / gauntlet snapshot */}
-        <div className="w-64 border-r border-cyan/10 bg-midnight/80 flex flex-col">
+        {/* Left panel: files / git / gauntlet snapshot. On mobile: drawer overlay */}
+        <div
+          className={
+            isMobile
+              ? `fixed inset-y-12 left-0 z-30 w-72 border-r border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
+                  mobileDrawer === "left" ? "translate-x-0" : "-translate-x-full"
+                }`
+              : "w-64 border-r border-cyan/10 bg-midnight/80 flex flex-col"
+          }
+        >
+          {isMobile && (
+            <div className="flex border-b border-cyan/10">
+              {["files", "git", "gauntlet"].map((k) => (
+                <button
+                  key={k}
+                  onClick={() => setLeftView(k)}
+                  className={`flex-1 py-2 font-display text-[0.65rem] tracking-[0.2em] ${
+                    leftView === k ? "text-cyan border-b border-cyan" : "text-alloy"
+                  }`}
+                  data-testid={`mobile-left-${k}`}
+                >{k.toUpperCase()}</button>
+              ))}
+            </div>
+          )}
           {leftView === "files" && (
             <FileTree
               tree={tree}
-              onOpen={openFile}
+              onOpen={(p) => { openFile(p); if (isMobile) setMobileDrawer(null); }}
               onRefresh={refreshTree}
               activePath={activeTab}
+              projectId={activeProject?.project_id}
             />
           )}
           {leftView === "git" && activeProject && (
-            <GitPanel projectId={activeProject.project_id} onRefresh={refreshTree} />
+            <GitHubPanel
+              projectId={activeProject.project_id}
+              onRefresh={refreshTree}
+              onProjectCloned={(p) => {
+                setProjects((prev) => [...prev, p]);
+                setActiveProject(p);
+              }}
+            />
           )}
           {leftView === "gauntlet" && (
             <div className="p-4 text-sm text-alloy">
@@ -193,49 +232,65 @@ export default function IDE() {
             onCmdK={() => setInlineOpen(true)}
           />
 
-          <div className="h-64 border-t border-cyan/10 flex flex-col bg-midnight/60">
-            <div className="flex items-center border-b border-cyan/10">
-              <button
-                data-testid="bottom-tab-terminal"
-                onClick={() => setBottomTab("terminal")}
-                className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
-                  bottomTab === "terminal" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
-                }`}
-              >
-                TERMINAL
-              </button>
-              <button
-                data-testid="bottom-tab-problems"
-                onClick={() => setBottomTab("problems")}
-                className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
-                  bottomTab === "problems" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
-                }`}
-              >
-                PROBLEMS{" "}
-                <span className="ml-2 font-mono text-orange">
-                  {activeTabObj?.score?.issues?.length ?? 0}
-                </span>
-              </button>
+          {/* Bottom (terminal/problems) — hidden on mobile by default, accessed via drawer */}
+          {(!isMobile || mobileDrawer === "bottom") && (
+            <div
+              className={
+                isMobile
+                  ? "fixed inset-x-0 bottom-12 top-1/2 z-30 border-t border-cyan/10 flex flex-col bg-midnight shadow-2xl"
+                  : "h-64 border-t border-cyan/10 flex flex-col bg-midnight/60"
+              }
+            >
+              <div className="flex items-center border-b border-cyan/10">
+                <button
+                  data-testid="bottom-tab-terminal"
+                  onClick={() => setBottomTab("terminal")}
+                  className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
+                    bottomTab === "terminal" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
+                  }`}
+                >TERMINAL</button>
+                <button
+                  data-testid="bottom-tab-problems"
+                  onClick={() => setBottomTab("problems")}
+                  className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
+                    bottomTab === "problems" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
+                  }`}
+                >
+                  PROBLEMS <span className="ml-2 font-mono text-orange">{activeTabObj?.score?.issues?.length ?? 0}</span>
+                </button>
+                {isMobile && (
+                  <button
+                    onClick={() => setMobileDrawer(null)}
+                    className="ml-auto px-3 py-2 text-alloy hover:text-orange font-display text-[0.7rem]"
+                    data-testid="mobile-close-bottom"
+                  >CLOSE</button>
+                )}
+              </div>
+              <div className="flex-1 min-h-0">
+                {bottomTab === "terminal" && activeProject && (
+                  <TerminalPane projectId={activeProject.project_id} onHardBlock={setHardBlock} />
+                )}
+                {bottomTab === "problems" && (
+                  <ProblemsPanel
+                    issues={activeTabObj?.score?.issues || []}
+                    language={activeTabObj?.language}
+                  />
+                )}
+              </div>
             </div>
-            <div className="flex-1 min-h-0">
-              {bottomTab === "terminal" && activeProject && (
-                <TerminalPane
-                  projectId={activeProject.project_id}
-                  onHardBlock={setHardBlock}
-                />
-              )}
-              {bottomTab === "problems" && (
-                <ProblemsPanel
-                  issues={activeTabObj?.score?.issues || []}
-                  language={activeTabObj?.language}
-                />
-              )}
-            </div>
-          </div>
+          )}
         </div>
 
-        {/* Right: AI coworker */}
-        <div className="w-[26rem] border-l border-cyan/10 bg-midnight/80 flex flex-col min-w-0">
+        {/* Right: AI coworker. On mobile: drawer from right */}
+        <div
+          className={
+            isMobile
+              ? `fixed inset-y-12 right-0 z-30 w-[92vw] max-w-md border-l border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
+                  mobileDrawer === "right" ? "translate-x-0" : "translate-x-full"
+                }`
+              : "w-[26rem] border-l border-cyan/10 bg-midnight/80 flex flex-col min-w-0"
+          }
+        >
           <AICoworker
             project={activeProject}
             activeTab={activeTabObj}
@@ -245,6 +300,15 @@ export default function IDE() {
             onAICall={() => telemetryRef.current?.refresh()}
           />
         </div>
+
+        {/* Drawer scrim on mobile */}
+        {isMobile && mobileDrawer && (
+          <div
+            onClick={() => setMobileDrawer(null)}
+            className="fixed inset-0 z-20 bg-midnight/60 backdrop-blur-sm"
+            data-testid="mobile-scrim"
+          />
+        )}
 
         {/* Slide-in preview */}
         {previewOpen && activeProject && (
@@ -257,6 +321,15 @@ export default function IDE() {
       </div>
 
       <ChainTelemetry ref={telemetryRef} />
+
+      {/* Mobile bottom dock */}
+      {isMobile && (
+        <div className="h-12 border-t border-cyan/15 bg-midnight flex items-stretch z-30 pr-28" data-testid="mobile-dock">
+          <DockButton label="FILES" active={mobileDrawer === "left"} onClick={() => setMobileDrawer(mobileDrawer === "left" ? null : "left")} testid="dock-files" />
+          <DockButton label="TERM" active={mobileDrawer === "bottom"} onClick={() => setMobileDrawer(mobileDrawer === "bottom" ? null : "bottom")} testid="dock-terminal" />
+          <DockButton label="J" active={mobileDrawer === "right"} onClick={() => setMobileDrawer(mobileDrawer === "right" ? null : "right")} testid="dock-ai" />
+        </div>
+      )}
 
       {inlineOpen && activeTabObj && (
         <InlineEditModal
@@ -282,5 +355,17 @@ export default function IDE() {
         />
       )}
     </div>
+  );
+}
+
+function DockButton({ label, active, onClick, testid }) {
+  return (
+    <button
+      onClick={onClick}
+      data-testid={testid}
+      className={`flex-1 flex items-center justify-center font-display text-[0.65rem] tracking-[0.25em] border-r border-cyan/10 last:border-r-0 ${
+        active ? "text-cyan bg-steel border-t-2 border-t-cyan" : "text-alloy"
+      }`}
+    >{label}</button>
   );
 }

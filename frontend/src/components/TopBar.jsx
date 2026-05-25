@@ -19,15 +19,15 @@ export default function TopBar({
   const passColor = score >= 4 ? "var(--viridian)" : score >= 2 ? "var(--orange)" : "#FF2D55";
 
   return (
-    <div className="h-12 border-b border-cyan/10 bg-midnight/90 flex items-center px-3 gap-4 relative z-30" data-testid="top-bar">
+    <div className="h-12 border-b border-cyan/10 bg-midnight/90 flex items-center px-2 sm:px-3 gap-2 sm:gap-4 relative z-30" data-testid="top-bar">
       <div className="flex items-center gap-2">
         <img src={LOGO_URL} alt="Sovereign Shards" className="h-6 w-6" />
-        <div className="font-display text-[0.7rem] tracking-[0.3em] text-cyan">GAUNTLET</div>
-        <div className="font-mono text-[0.6rem] text-alloy">v1.0</div>
+        <div className="hidden sm:block font-display text-[0.7rem] tracking-[0.3em] text-cyan">GAUNTLET</div>
+        <div className="hidden md:block font-mono text-[0.6rem] text-alloy">v1.0</div>
       </div>
 
       {/* Project switcher */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1 sm:gap-2 min-w-0">
         <select
           data-testid="project-switcher"
           value={activeProject?.project_id || ""}
@@ -35,7 +35,7 @@ export default function TopBar({
             const p = projects.find((x) => x.project_id === e.target.value);
             if (p) onProjectChange(p);
           }}
-          className="bg-steel border border-cyan/20 text-gridwhite font-mono text-xs px-2 py-1"
+          className="bg-steel border border-cyan/20 text-gridwhite font-mono text-xs px-2 py-1 max-w-[8rem] sm:max-w-none truncate"
         >
           {projects.map((p) => (
             <option key={p.project_id} value={p.project_id}>{p.name}</option>
@@ -78,8 +78,8 @@ export default function TopBar({
       {/* Gauntlet HUD */}
       <div className="flex items-center gap-2 ml-auto" data-testid="gauntlet-hud">
         <ShieldCheck size={14} style={{ color: passColor }} weight="fill" />
-        <span className="font-display text-[0.7rem] tracking-[0.25em] text-alloy">GAUNTLET</span>
-        <div className="flex gap-1">
+        <span className="hidden md:inline font-display text-[0.7rem] tracking-[0.25em] text-alloy">GAUNTLET</span>
+        <div className="hidden sm:flex gap-1">
           {[0,1,2,3,4].map((i) => (
             <span
               key={i}
@@ -97,13 +97,13 @@ export default function TopBar({
       <button
         data-testid="toggle-preview"
         onClick={onTogglePreview}
-        className="btn-ghost"
+        className="btn-ghost !px-2 sm:!px-3"
       >
         {previewOpen ? <EyeSlash size={14} /> : <Eye size={14} />}
-        {previewOpen ? "HIDE" : "PREVIEW"}
+        <span className="hidden sm:inline">{previewOpen ? "HIDE" : "PREVIEW"}</span>
       </button>
 
-      <div className="h-6 w-px bg-cyan/15"></div>
+      <div className="hidden sm:block h-6 w-px bg-cyan/15"></div>
       <button
         data-testid="settings-button"
         onClick={() => setSettingsOpen(true)}

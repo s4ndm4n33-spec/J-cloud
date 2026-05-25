@@ -23,7 +23,7 @@ export default function SignIn() {
   return (
     <div className="min-h-screen w-full flex flex-col bg-midnight text-gridwhite relative overflow-hidden">
       {/* HUD frame */}
-      <div className="absolute inset-6 border border-cyan/15 pointer-events-none">
+      <div className="absolute inset-3 sm:inset-6 border border-cyan/15 pointer-events-none">
         <div className="absolute top-0 left-0 w-3 h-3 border-t border-l border-cyan"></div>
         <div className="absolute top-0 right-0 w-3 h-3 border-t border-r border-cyan"></div>
         <div className="absolute bottom-0 left-0 w-3 h-3 border-b border-l border-cyan"></div>
@@ -31,26 +31,26 @@ export default function SignIn() {
       </div>
 
       {/* Top brand bar */}
-      <div className="flex items-center justify-between px-10 py-6 relative z-10">
+      <div className="flex items-center justify-between px-5 sm:px-10 py-5 sm:py-6 relative z-10">
         <div className="flex items-center gap-3">
           <img src={LOGO_URL} alt="Sovereign Shards" className="h-9 w-9" data-testid="brand-logo" />
           <div className="leading-tight">
-            <div className="font-display text-[0.7rem] tracking-[0.35em] text-cyan">SOVEREIGN SHARDS</div>
-            <div className="font-mono text-[0.65rem] text-alloy">// GAUNTLET DEVSPACE</div>
+            <div className="font-display text-[0.65rem] sm:text-[0.7rem] tracking-[0.3em] sm:tracking-[0.35em] text-cyan">SOVEREIGN SHARDS</div>
+            <div className="font-mono text-[0.6rem] sm:text-[0.65rem] text-alloy">// GAUNTLET DEVSPACE</div>
           </div>
         </div>
-        <div className="font-mono text-[0.65rem] text-alloy tracking-widest">
+        <div className="hidden sm:block font-mono text-[0.65rem] text-alloy tracking-widest">
           NODE {Math.random().toString(36).slice(2, 8).toUpperCase()} · ONLINE
         </div>
       </div>
 
       {/* Centered login card */}
-      <div className="flex-1 flex items-center justify-center px-6">
-        <div className="w-full max-w-xl relative tick-corner panel p-10 sm:p-12">
-          <div className="font-mono text-[0.65rem] tracking-[0.25em] text-cyan mb-2">
+      <div className="flex-1 flex items-center justify-center px-4 sm:px-6">
+        <div className="w-full max-w-xl relative tick-corner panel p-6 sm:p-10">
+          <div className="font-mono text-[0.6rem] sm:text-[0.65rem] tracking-[0.25em] text-cyan mb-2">
             // IF IT CAN'T PROVE INTEGRITY, IT HALTS.
           </div>
-          <h1 className="font-display text-4xl sm:text-5xl font-extrabold tracking-tight text-gridwhite leading-tight">
+          <h1 className="font-display text-3xl sm:text-5xl font-extrabold tracking-tight text-gridwhite leading-tight">
             DEPLOY <span className="text-cyan">THE</span> SHARD
           </h1>
           <p className="mt-3 text-alloy text-sm max-w-md">
@@ -79,7 +79,7 @@ export default function SignIn() {
       </div>
 
       {/* Brand pillars footer */}
-      <div className="px-10 py-6 flex items-center justify-between font-mono text-[0.65rem] tracking-[0.3em] text-alloy">
+      <div className="px-5 sm:px-10 py-4 sm:py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 font-mono text-[0.55rem] sm:text-[0.65rem] tracking-[0.2em] sm:tracking-[0.3em] text-alloy">
         <div>SOVEREIGN INFRASTRUCTURE <span className="text-cyan">·</span> LOCAL AUTONOMY <span className="text-cyan">·</span> VERIFIABLE EXECUTION</div>
         <div>DETERMINISTIC. AUTONOMOUS. SUBSTRATE.</div>
       </div>
