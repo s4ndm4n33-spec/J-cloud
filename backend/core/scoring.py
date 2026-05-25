@@ -197,17 +197,19 @@ def audit_project(root: Path) -> dict[str, Any]:
 
     # Recommendations sorted by potential gain
     recs: list[dict[str, Any]] = []
-    if ast_pts < 40:
-        # Top 3 worst-scoring files
-        worst = sorted(file_reports, key=lambda x: x["score"])[:3]
+    # Always surface the worst-scoring files (if any issues at all) so the
+    # PROPOSE FIX affordance is reachable even when overall ast_pts is full.
+    fixable = [w for w in file_reports if w["issues"] > 0]
+    if fixable:
+        worst = sorted(fixable, key=lambda x: (x["score"], -x["issues"]))[:3]
         for w in worst:
-            if w["issues"] > 0:
-                recs.append({
-                    "category": "five_masters",
-                    "title": f"Refactor {w['path']} (Five Masters {w['score']}/5)",
-                    "potential_gain": round((1 - w["score"] / 5) * (40 / max(1, len(file_reports))), 1),
-                    "target_file": w["path"],
-                })
+            gain = round((1 - w["score"] / 5) * (40 / max(1, len(file_reports))), 1)
+            recs.append({
+                "category": "five_masters",
+                "title": f"Refine {w['path']} ({w['issues']} Gauntlet finding{'s' if w['issues'] != 1 else ''}, score {w['score']}/5)",
+                "potential_gain": max(gain, 0.5),
+                "target_file": w["path"],
+            })
     if not has_readme:
         recs.append({"category": "docs", "title": "Add a README.md", "potential_gain": 5})
     if doc_cov < 0.6:
