@@ -9,3 +9,10 @@ workspaces/
 *.pyc
 .pytest_cache/
 test_reports/
+.env
+.env.*
+*.env
+credentials.json
+*.pem
+*.key
+.credentials
