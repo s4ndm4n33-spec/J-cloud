@@ -28,9 +28,19 @@ def _headers(token: str) -> dict[str, str]:
 async def whoami(token: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.get(f"{GITHUB_API}/user", headers=_headers(token))
-    if r.status_code != 200:
-        raise GitHubError(f"whoami failed: {r.status_code} {r.text[:200]}")
-    return r.json()
+    if r.status_code == 200:
+        return r.json()
+    # Surface a clean, human-readable error
+    try:
+        body = r.json()
+        msg = body.get("message", r.text[:200])
+    except Exception:  # noqa: BLE001
+        msg = r.text[:200]
+    if r.status_code == 401:
+        raise GitHubError(f"GitHub rejected this token (401 Bad credentials). Token is invalid, expired, or lacks 'read:user' scope. Detail: {msg}")
+    if r.status_code == 403:
+        raise GitHubError(f"GitHub denied access (403). Token may lack scopes or be SSO-restricted. Detail: {msg}")
+    raise GitHubError(f"GitHub /user returned {r.status_code}: {msg}")
 
 
 async def list_repos(token: str, page: int = 1) -> list[dict[str, Any]]:

@@ -223,10 +223,15 @@ export default function GitHubPanel({ projectId, onRefresh, onProjectCloned }) {
 function ConnectForm({ onDone, onCancel, flash }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   async function go() {
-    setBusy(true);
+    setBusy(true); setError("");
     try { await githubConnectPAT(token.trim()); onDone(); }
-    catch (e) { flash(e?.response?.data?.detail?.slice(0, 80) || "Invalid token"); }
+    catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || "Invalid token";
+      setError(String(detail));
+      flash("Token rejected — see panel for details");
+    }
     finally { setBusy(false); }
   }
   return (
@@ -235,16 +240,38 @@ function ConnectForm({ onDone, onCancel, flash }) {
       <input
         autoFocus
         type="password"
-        placeholder="ghp_xxx…"
+        placeholder="ghp_… or github_pat_…"
         value={token}
         onChange={(e) => setToken(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") go(); }}
         className="w-full bg-steel border border-cyan/30 px-2 py-1.5 font-mono text-xs text-gridwhite"
         data-testid="gh-token-input"
       />
+      {error && (
+        <div className="p-2 border border-orange/40 bg-orange/5 font-mono text-[0.65rem] text-orange whitespace-pre-wrap break-words max-h-32 overflow-auto" data-testid="gh-token-error">
+          {error}
+        </div>
+      )}
+      <div className="font-mono text-[0.6rem] text-alloy leading-relaxed">
+        Required for <span className="text-cyan">classic</span> PAT: <span className="text-cyan">repo</span> + <span className="text-cyan">read:user</span> scopes.
+        <br />
+        For <span className="text-cyan">fine-grained</span> PAT: <span className="text-cyan">Contents R/W</span> + <span className="text-cyan">Metadata R</span> + <span className="text-cyan">Pull requests R/W</span>, with target repos selected under "Repository access".
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        <a
+          href="https://github.com/settings/tokens/new?scopes=repo,read:user&description=Gauntlet%20DevSpace"
+          target="_blank" rel="noreferrer"
+          className="font-mono text-[0.6rem] text-cyan hover:underline"
+        >&gt; create classic PAT</a>
+        <a
+          href="https://github.com/settings/personal-access-tokens/new"
+          target="_blank" rel="noreferrer"
+          className="font-mono text-[0.6rem] text-cyan hover:underline"
+        >&gt; create fine-grained PAT</a>
+      </div>
       <div className="flex gap-1.5">
         <button onClick={onCancel} className="btn-ghost flex-1 justify-center text-[0.7rem]">CANCEL</button>
-        <button onClick={go} disabled={busy || token.length < 20} className="btn-solid flex-1 justify-center text-[0.7rem]" data-testid="gh-token-save">
+        <button onClick={go} disabled={busy || token.trim().length < 20} className="btn-solid flex-1 justify-center text-[0.7rem]" data-testid="gh-token-save">
           {busy ? "VERIFYING…" : "CONNECT"}
         </button>
       </div>
