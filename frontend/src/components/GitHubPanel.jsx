@@ -1,12 +1,38 @@
-import { useEffect, useState } from "react";
-import { GithubLogo, CloudArrowUp, CloudArrowDown, GitPullRequest, GitBranch, Plus, Link as LinkIcon, ArrowSquareOut, X } from "@phosphor-icons/react";
+import { useEffect, useState, Component } from "react";
+import { GithubLogo, CloudArrowUp, CloudArrowDown, GitPullRequest, Plus, ArrowSquareOut, X } from "@phosphor-icons/react";
 import {
   githubStatus, githubConnectPAT, githubDisconnect, githubRepos, githubClone,
-  githubCreateRepo, githubLink, githubPush, githubPull, githubPR,
+  githubCreateRepo, githubPush, githubPull, githubPR,
   gitStatus, gitCommit,
 } from "@/lib/api";
 
-export default function GitHubPanel({ projectId, onRefresh, onProjectCloned }) {
+class PanelErrorBoundary extends Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error("GitHubPanel crashed:", err, info); }
+  render() {
+    if (this.state.err) {
+      return (
+        <div className="p-3 font-mono text-[0.7rem] text-orange" data-testid="github-panel-error">
+          // GitHub panel hit an error. Reload to retry.
+          <pre className="text-[0.6rem] mt-2 whitespace-pre-wrap break-words">{String(this.state.err)}</pre>
+          <button onClick={() => this.setState({ err: null })} className="btn-ghost mt-2 text-[0.65rem]">RETRY</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function GitHubPanel(props) {
+  return (
+    <PanelErrorBoundary>
+      <GitHubPanelInner {...props} />
+    </PanelErrorBoundary>
+  );
+}
+
+function GitHubPanelInner({ projectId, onRefresh, onProjectCloned }) {
   const [gh, setGh] = useState({ connected: false });
   const [local, setLocal] = useState({ branch: "main", files: [] });
   const [view, setView] = useState("dashboard"); // dashboard | connect | repos | new
@@ -17,10 +43,14 @@ export default function GitHubPanel({ projectId, onRefresh, onProjectCloned }) {
   function flash(m) { setToast(m); setTimeout(() => setToast(null), 2200); }
 
   async function refresh() {
-    const [s, ls] = await Promise.all([
-      githubStatus(),
-      projectId ? gitStatus(projectId) : Promise.resolve({ branch: "main", files: [] }),
-    ]);
+    let s = { connected: false };
+    let ls = { branch: "main", files: [] };
+    try { s = await githubStatus(); }
+    catch (e) { console.warn("githubStatus failed", e); }
+    if (projectId) {
+      try { ls = await gitStatus(projectId); }
+      catch (e) { console.warn("gitStatus failed", e); }
+    }
     setGh(s); setLocal(ls);
   }
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [projectId]);
