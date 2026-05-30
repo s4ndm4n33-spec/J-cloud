@@ -30,6 +30,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
 
+from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan, scan_command
 from core.fivemasters import evaluate as fm_evaluate
 from core.github_api import (
@@ -39,6 +40,7 @@ from core.github_api import (
 from core.keyvault import SUPPORTED_PROVIDERS, decrypt_key, encrypt_key, mask
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
 from core.scoring import audit_project
+from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -1190,6 +1192,123 @@ async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
         {"user_id": user["user_id"]}, {"_id": 0}
     ).sort("ts", -1).to_list(limit)
     return {"events": docs}
+
+
+@api.post("/ai/agent")
+async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
+    """Agentic chat — J plans, calls tools, returns transcript."""
+    project_id = payload.get("project_id")
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id required")
+    base = project_path(user["user_id"], project_id)
+    message = payload.get("message", "")
+    conversation_id = payload.get("conversation_id") or f"agent_{uuid.uuid4().hex[:10]}"
+    max_steps = int(payload.get("max_steps", 6))
+
+    # Build resumable transcript: prior history + this user message
+    history = await db.messages.find(
+        {"conversation_id": conversation_id, "user_id": user["user_id"]}, {"_id": 0}
+    ).sort("ts", 1).to_list(200)
+    transcript_for_llm: list[str] = []
+    for h in history:
+        role = h.get("role")
+        if role == "user":
+            transcript_for_llm.append(f"[USER]\n{h['content']}")
+        elif role == "assistant":
+            transcript_for_llm.append(f"[J]\n{h['content']}")
+        elif role == "tool":
+            transcript_for_llm.append(f"[TOOL RESULT — {h.get('name')}]\n{h.get('content','')[:1500]}")
+
+    await db.messages.insert_one({
+        "conversation_id": conversation_id, "user_id": user["user_id"],
+        "role": "user", "content": message,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    })
+    transcript_for_llm.append(f"[USER]\n{message}")
+
+    gh_token = await _resolve_github_token(user["user_id"])
+    ctx = ToolContext(base=base, user_id=user["user_id"],
+                      project_id=project_id, github_token=gh_token)
+
+    steps: list[dict[str, Any]] = []
+    done_reason: Optional[str] = None
+    final_summary = ""
+
+    for step_idx in range(max_steps):
+        user_text = "\n\n".join(transcript_for_llm) + "\n\n[J]\n"
+        reply, meta = await _chain_call(
+            user["user_id"], "chat", AGENT_PROMPT, user_text,
+            f"{user['user_id']}-agent-{conversation_id}-{step_idx}",
+        )
+        if not meta["success"]:
+            done_reason = "llm_chain_exhausted"
+            final_summary = "// J:OFFLINE — LLM chain exhausted. Configure provider keys in Settings."
+            steps.append({"type": "assistant", "text": final_summary, "meta": meta})
+            break
+
+        prose = strip_tool_calls(reply)
+        calls = parse_tool_calls(reply)
+        steps.append({"type": "assistant", "text": prose, "raw": reply, "meta": meta})
+        transcript_for_llm.append(f"[J]\n{reply}")
+
+        if not calls:
+            done_reason = "no_tool_calls"
+            final_summary = prose
+            break
+
+        ask_user_question: Optional[str] = None
+        is_done = False
+        for call in calls:
+            result = await execute_tool(ctx, call["name"], call.get("args", {}))
+            steps.append({"type": "tool", "name": call["name"], "args": call.get("args", {}),
+                          "result": result})
+            await db.messages.insert_one({
+                "conversation_id": conversation_id, "user_id": user["user_id"],
+                "role": "tool", "name": call["name"],
+                "content": json.dumps({"args": call.get("args", {}), "result": result})[:6000],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
+            transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{json.dumps(result)[:1500]}")
+
+            if result.get("_done"):
+                is_done = True
+                final_summary = result.get("summary", "")
+                done_reason = "done_tool"
+                break
+            if result.get("_ask_user"):
+                ask_user_question = result.get("question", "")
+                done_reason = "awaiting_user"
+                break
+
+        if is_done or ask_user_question:
+            break
+    else:
+        done_reason = "max_steps_reached"
+        final_summary = "// Stopped at max_steps. Send another message to continue."
+
+    # Persist the final J message
+    await db.messages.insert_one({
+        "conversation_id": conversation_id, "user_id": user["user_id"],
+        "role": "assistant", "content": final_summary,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "steps_count": len(steps),
+        "done_reason": done_reason,
+    })
+
+    return {
+        "conversation_id": conversation_id,
+        "steps": steps,
+        "final": final_summary,
+        "done_reason": done_reason,
+    }
+
+
+@api.get("/ai/agent/history")
+async def ai_agent_history(conversation_id: str, user: dict = Depends(get_current_user)):
+    docs = await db.messages.find(
+        {"conversation_id": conversation_id, "user_id": user["user_id"]}, {"_id": 0}
+    ).sort("ts", 1).to_list(500)
+    return {"messages": docs}
 
 
 @api.get("/ai/chain")

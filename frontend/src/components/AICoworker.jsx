@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge } from "@phosphor-icons/react";
-import { aiChat, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 
 const TABS = [
@@ -74,6 +74,7 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [agentMode, setAgentMode] = useState(true);
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -87,19 +88,33 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
     try {
-      const treeSummary = truncateTree(tree || []).join("\n");
-      const payload = {
-        conversation_id: conversationId,
-        message: text,
-        file_path: activeTab?.path,
-        file_content: activeTab?.content?.slice(0, 8000),
-        language: activeTab?.language,
-        tree_summary: treeSummary,
-      };
-      const r = await aiChat(payload);
-      setConversationId(r.conversation_id);
-      setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
-      onAICall?.();
+      if (agentMode) {
+        if (!project) {
+          setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
+          return;
+        }
+        const r = await aiAgent({
+          project_id: project.project_id,
+          conversation_id: conversationId,
+          message: text,
+        });
+        setConversationId(r.conversation_id);
+        setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
+        onAICall?.();
+      } else {
+        const treeSummary = truncateTree(tree || []).join("\n");
+        const r = await aiChat({
+          conversation_id: conversationId,
+          message: text,
+          file_path: activeTab?.path,
+          file_content: activeTab?.content?.slice(0, 8000),
+          language: activeTab?.language,
+          tree_summary: treeSummary,
+        });
+        setConversationId(r.conversation_id);
+        setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
+        onAICall?.();
+      }
     } catch (e) {
       setMessages((prev) => [...prev, { role: "assistant", content: `// LLM error: ${e?.response?.data?.detail || e.message}` }]);
     } finally {
@@ -111,24 +126,24 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
     <div className="flex flex-col h-full">
       <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-3 space-y-3" data-testid="chat-messages">
         {messages.map((m, i) => (
-          <div key={i} className={`text-sm ${m.role === "user" ? "text-gridwhite" : m.role === "system" ? "text-alloy" : "text-gridwhite"}`}>
-            <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5 flex items-center gap-2">
-              <span>{m.role === "user" ? "// YOU" : m.role === "system" ? "// J:SYSTEM" : "// J"}</span>
-              {m.meta?.step_used && (
-                <span className="text-alloy" data-testid="chat-served-by">
-                  · via {m.meta.step_used.source}/{m.meta.step_used.provider}
-                  {m.meta.attempts?.length > 1 && (
-                    <span className="text-orange"> · {m.meta.attempts.length - 1} fallback{m.meta.attempts.length > 2 ? "s" : ""}</span>
-                  )}
-                </span>
-              )}
-            </div>
-            <div className="whitespace-pre-wrap leading-relaxed">{m.content}</div>
-          </div>
+          <ChatMessage key={i} msg={m} />
         ))}
-        {busy && <div className="font-mono text-[0.65rem] text-cyan">// J is thinking…</div>}
+        {busy && <div className="font-mono text-[0.65rem] text-cyan">// J is {agentMode ? "working" : "thinking"}…</div>}
       </div>
-      <div className="border-t border-cyan/10 p-2 flex gap-2">
+
+      <div className="px-2 pt-1 flex items-center gap-2 border-t border-cyan/10">
+        <label className="flex items-center gap-1.5 font-mono text-[0.65rem] cursor-pointer select-none" data-testid="agent-mode-toggle">
+          <input type="checkbox" checked={agentMode} onChange={(e) => setAgentMode(e.target.checked)} className="accent-cyan-500" />
+          <Wrench size={11} className={agentMode ? "text-cyan" : "text-alloy"} weight={agentMode ? "fill" : "regular"} />
+          <span className={agentMode ? "text-cyan" : "text-alloy"}>
+            AGENT MODE {agentMode ? "ON" : "OFF"}
+          </span>
+          <span className="text-alloy ml-1">
+            {agentMode ? "// J can mutate files" : "// chat only"}
+          </span>
+        </label>
+      </div>
+      <div className="p-2 flex gap-2">
         <textarea
           data-testid="chat-input"
           value={input}
@@ -136,7 +151,7 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
           }}
-          placeholder="Talk to J…"
+          placeholder={agentMode ? "Tell J what to build…" : "Talk to J…"}
           rows={2}
           className="flex-1 bg-steel border border-cyan/20 px-2 py-1.5 font-mono text-xs text-gridwhite resize-none"
         />
@@ -149,6 +164,91 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
           <PaperPlaneTilt size={12} weight="fill" /> SEND
         </button>
       </div>
+    </div>
+  );
+}
+
+function ChatMessage({ msg }) {
+  if (msg.role === "user") {
+    return (
+      <div className="text-sm text-gridwhite">
+        <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5">// YOU</div>
+        <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+      </div>
+    );
+  }
+  if (msg.role === "system") {
+    return (
+      <div className="text-sm text-alloy">
+        <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5">// J:SYSTEM</div>
+        <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+      </div>
+    );
+  }
+  if (msg.role === "agent") {
+    return (
+      <div className="text-sm text-gridwhite" data-testid="agent-message">
+        <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5 flex gap-2">
+          <span>// J · AGENT</span>
+          <span className="text-alloy">· {(msg.steps || []).filter(s => s.type==="tool").length} tool call{(msg.steps||[]).filter(s=>s.type==="tool").length===1?"":"s"}</span>
+          {msg.done_reason && <span className="text-alloy">· {msg.done_reason}</span>}
+        </div>
+        <div className="space-y-1.5">
+          {(msg.steps || []).map((s, i) => (
+            s.type === "assistant"
+              ? (s.text ? <div key={i} className="whitespace-pre-wrap leading-relaxed text-gridwhite/95">{s.text}</div> : null)
+              : <ToolCard key={i} step={s} />
+          ))}
+          {msg.final && <div className="mt-2 whitespace-pre-wrap text-gridwhite font-medium">{msg.final}</div>}
+        </div>
+      </div>
+    );
+  }
+  // legacy assistant (non-agent)
+  return (
+    <div className="text-sm text-gridwhite">
+      <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-0.5 flex items-center gap-2">
+        <span>// J</span>
+        {msg.meta?.step_used && (
+          <span className="text-alloy" data-testid="chat-served-by">
+            · via {msg.meta.step_used.source}/{msg.meta.step_used.provider}
+          </span>
+        )}
+      </div>
+      <div className="whitespace-pre-wrap leading-relaxed">{msg.content}</div>
+    </div>
+  );
+}
+
+function ToolCard({ step }) {
+  const [open, setOpen] = useState(false);
+  const isErr = !!step.result?.error;
+  const isBlocked = (step.result?.error || "").includes("BLOCKED");
+  const color = isBlocked ? "var(--orange)" : isErr ? "#FF6A1A" : "var(--viridian)";
+  const argsPreview = Object.entries(step.args || {})
+    .map(([k, v]) => `${k}=${typeof v === "string" ? `"${v.slice(0, 30)}${v.length > 30 ? "…" : ""}"` : JSON.stringify(v).slice(0, 30)}`)
+    .join(" ");
+  return (
+    <div className="border border-cyan/15 panel" data-testid={`tool-card-${step.name}`}>
+      <button onClick={() => setOpen((v) => !v)} className="w-full flex items-center gap-2 px-2 py-1 text-left">
+        {open ? <CaretDown size={10} /> : <CaretRight size={10} />}
+        <Wrench size={11} style={{ color }} weight="fill" />
+        <span className="font-mono text-[0.7rem] text-cyan">{step.name}</span>
+        <span className="font-mono text-[0.6rem] text-alloy truncate flex-1">{argsPreview}</span>
+        <span className="font-mono text-[0.6rem]" style={{ color }}>{isBlocked ? "BLOCKED" : isErr ? "ERROR" : "OK"}</span>
+      </button>
+      {open && (
+        <div className="px-2 pb-2 space-y-1">
+          <details>
+            <summary className="font-mono text-[0.6rem] text-alloy cursor-pointer">args</summary>
+            <pre className="font-mono text-[0.65rem] text-gridwhite/90 bg-steel p-1.5 overflow-auto max-h-32">{JSON.stringify(step.args || {}, null, 2)}</pre>
+          </details>
+          <details open>
+            <summary className="font-mono text-[0.6rem] text-alloy cursor-pointer">result</summary>
+            <pre className="font-mono text-[0.65rem] text-gridwhite/90 bg-steel p-1.5 overflow-auto max-h-48">{JSON.stringify(step.result || {}, null, 2)}</pre>
+          </details>
+        </div>
+      )}
     </div>
   );
 }

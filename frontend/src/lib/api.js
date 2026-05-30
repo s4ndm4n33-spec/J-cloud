@@ -71,6 +71,9 @@ export async function gitLog(project_id) {
 export async function aiChat(payload) {
   return (await client.post("/ai/chat", payload)).data;
 }
+export async function aiAgent(payload) {
+  return (await client.post("/ai/agent", payload, { timeout: 180000 })).data;
+}
 export async function aiRefine(payload) {
   return (await client.post("/ai/refine", payload)).data;
 }
