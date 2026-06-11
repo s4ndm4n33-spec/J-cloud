@@ -118,6 +118,14 @@ export async function projectAudit(project_id) {
   return (await client.get(`/projects/${project_id}/audit`)).data;
 }
 
+// ----- Migration Log -----
+export async function getMigrationLog(project_id) {
+  return (await client.get(`/projects/${project_id}/migration_log`)).data;
+}
+export async function addMigrationEntry(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/migration_log`, payload)).data;
+}
+
 // ----- Upload / Download -----
 export async function uploadFile(project_id, file, path) {
   const fd = new FormData();

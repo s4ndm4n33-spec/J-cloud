@@ -38,6 +38,9 @@ from core.github_api import (
     git_set_remote, list_repos, open_pr, whoami,
 )
 from core.keyvault import SUPPORTED_PROVIDERS, decrypt_key, encrypt_key, mask
+from core.migration_log import (
+    ensure_log, log_audit, log_manual, log_session_start, log_tool_event, read_log,
+)
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
 from core.scoring import audit_project
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
@@ -1088,7 +1091,37 @@ async def github_pull_request(project_id: str, payload: dict,
 @api.get("/projects/{project_id}/audit")
 async def project_audit(project_id: str, user: dict = Depends(get_current_user)):
     base = project_path(user["user_id"], project_id)
-    return audit_project(base)
+    result = audit_project(base)
+    try:
+        top = result["recommendations"][0]["title"] if result.get("recommendations") else None
+        log_audit(base, signer="SYSTEM", score=result["score"],
+                  grade=result["grade"], top_recommendation=top)
+    except (OSError, KeyError) as e:
+        log.warning(f"audit log write failed: {e}")
+    return result
+
+
+@api.get("/projects/{project_id}/migration_log")
+async def get_migration_log(project_id: str, user: dict = Depends(get_current_user)):
+    base = project_path(user["user_id"], project_id)
+    return {"content": read_log(base), "path": ".gauntlet/migration.log.md"}
+
+
+@api.post("/projects/{project_id}/migration_log")
+async def add_migration_log(project_id: str, payload: dict,
+                            user: dict = Depends(get_current_user)):
+    base = project_path(user["user_id"], project_id)
+    entry = log_manual(
+        base,
+        signer=(payload.get("signer") or user.get("name") or user.get("email") or "USER"),
+        title=payload.get("title") or "Untitled milestone",
+        problem=payload.get("problem", ""),
+        fix=payload.get("fix", ""),
+        why=payload.get("why", ""),
+        next_step=payload.get("next_step", ""),
+        tags=payload.get("tags") or ["manual"],
+    )
+    return {"ok": True, "entry": entry}
 
 
 # ---------- UPLOAD / DOWNLOAD ----------
@@ -1386,6 +1419,12 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
         is_done = False
         for call in calls:
             result = await execute_tool(ctx, call["name"], call.get("args", {}))
+            # Code-signed log entry (no LLM involvement)
+            try:
+                log_tool_event(base, signer="J", tool=call["name"],
+                               args=call.get("args", {}), result=result)
+            except OSError as e:
+                log.warning(f"migration log write failed: {e}")
             steps.append({"type": "tool", "name": call["name"], "args": call.get("args", {}),
                           "result": result})
             await db.messages.insert_one({
@@ -1480,3 +1519,15 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def _shutdown():
     client.close()
+
+
+# ---------- MOUNT ----------
+
+app.include_router(api)
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
