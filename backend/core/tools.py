@@ -41,8 +41,17 @@ TOOL_SPEC: list[dict[str, Any]] = [
     {"name": "find_files", "desc": "Glob-match file paths.",
      "args": {"pattern": "glob like '**/*.py'"}},
     # Exec
-    {"name": "run_command", "desc": "Run a shell command in the workspace (destructive patterns halt and require user override).",
-     "args": {"cmd": "string", "timeout": "int seconds (default 30)"}},
+    {"name": "run_command", "desc": "Run a shell command in the workspace. Destructive patterns halt and require user override. timeout default 120s, max 600s — use longer for npm install / pip install / cargo build.",
+     "args": {"cmd": "string", "timeout": "int seconds (default 120, max 600)"}},
+    # Project build
+    {"name": "detect_project", "desc": "Inspect the workspace and report what kind of project it is (node, python, rust, go, etc.) + suggested install/build/test commands.",
+     "args": {}},
+    {"name": "install_deps", "desc": "Auto-install dependencies based on detected manifest (package.json -> yarn/npm install, requirements.txt -> pip install, Cargo.toml -> cargo fetch, go.mod -> go mod download).",
+     "args": {}},
+    {"name": "build_project", "desc": "Auto-build the project (npm/yarn build, python -m build, cargo build, go build). Long-running — uses 600s timeout.",
+     "args": {}},
+    {"name": "extract_zip", "desc": "Extract a .zip file already in the workspace into a destination folder. Strips a single top-level folder by default.",
+     "args": {"zip_path": "string", "dest": "string (default '.')", "strip_root": "bool (default true)"}},
     # Git
     {"name": "git_status", "desc": "Show git status.", "args": {}},
     {"name": "git_commit", "desc": "git add . && git commit -m <message>.",
@@ -223,7 +232,8 @@ async def _tool_find_files(ctx: ToolContext, pattern: str) -> dict:
     return {"pattern": pattern, "matches": matches}
 
 
-async def _tool_run_command(ctx: ToolContext, cmd: str, timeout: int = 30) -> dict:
+async def _tool_run_command(ctx: ToolContext, cmd: str, timeout: int = 120) -> dict:
+    timeout = max(1, min(int(timeout), 600))
     matches = scan_command(cmd)
     if any(m.severity == "critical" for m in matches):
         return {"error": "BLOCKED — destructive pattern detected. Surface this to the user and request password override.",
@@ -242,6 +252,111 @@ async def _tool_run_command(ctx: ToolContext, cmd: str, timeout: int = 30) -> di
         }
     except asyncio.TimeoutError:
         return {"error": f"Timeout after {timeout}s"}
+
+
+def _detect_kind(base: Path) -> dict[str, Any]:
+    """Inspect manifests at root + one level deep to classify the project."""
+    found: dict[str, str] = {}
+    candidates = [
+        ("package.json", "node"),
+        ("requirements.txt", "python"),
+        ("pyproject.toml", "python"),
+        ("Cargo.toml", "rust"),
+        ("go.mod", "go"),
+        ("pom.xml", "java-maven"),
+        ("build.gradle", "java-gradle"),
+        ("Gemfile", "ruby"),
+        ("composer.json", "php"),
+        ("Makefile", "make"),
+        ("Dockerfile", "docker"),
+    ]
+    for name, kind in candidates:
+        if (base / name).exists():
+            found[name] = kind
+    # One level deep for monorepos
+    if not found:
+        for sub in base.iterdir() if base.is_dir() else []:
+            if sub.is_dir():
+                for name, kind in candidates:
+                    if (sub / name).exists():
+                        found[f"{sub.name}/{name}"] = kind
+                        break
+    # Choose primary
+    primary = next(iter(found.values()), "unknown")
+    suggestions = {
+        "node":   {"install": "yarn install || npm install", "build": "yarn build || npm run build", "test": "yarn test || npm test"},
+        "python": {"install": "pip install -r requirements.txt", "build": "python -m build || true", "test": "pytest"},
+        "rust":   {"install": "cargo fetch", "build": "cargo build --release", "test": "cargo test"},
+        "go":     {"install": "go mod download", "build": "go build ./...", "test": "go test ./..."},
+        "java-maven":  {"install": "mvn dependency:resolve", "build": "mvn package", "test": "mvn test"},
+        "java-gradle": {"install": "gradle dependencies", "build": "gradle build", "test": "gradle test"},
+        "ruby":   {"install": "bundle install", "build": "bundle exec rake build", "test": "bundle exec rake test"},
+        "make":   {"install": "make deps || true", "build": "make", "test": "make test"},
+        "docker": {"install": "true", "build": "docker build .", "test": "true"},
+        "unknown": {"install": "true", "build": "true", "test": "true"},
+    }.get(primary, {})
+    return {"primary": primary, "manifests": found, "suggested": suggestions}
+
+
+async def _tool_detect_project(ctx: ToolContext) -> dict:
+    return _detect_kind(ctx.base)
+
+
+async def _tool_install_deps(ctx: ToolContext) -> dict:
+    info = _detect_kind(ctx.base)
+    cmd = info["suggested"].get("install", "true")
+    return {"detected": info["primary"], "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_build_project(ctx: ToolContext) -> dict:
+    info = _detect_kind(ctx.base)
+    cmd = info["suggested"].get("build", "true")
+    return {"detected": info["primary"], "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_extract_zip(ctx: ToolContext, zip_path: str, dest: str = ".", strip_root: bool = True) -> dict:
+    import zipfile
+    src = _safe(ctx.base, zip_path)
+    if not src.is_file():
+        return {"error": f"Not a file: {zip_path}"}
+    dest_dir = _safe(ctx.base, dest if dest != "." else "")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    SKIP = {".git", "node_modules", "__pycache__", ".venv", ".DS_Store"}
+    try:
+        zf = zipfile.ZipFile(src)
+    except zipfile.BadZipFile as e:
+        return {"error": f"Bad zip: {e}"}
+    names = [n for n in zf.namelist() if not n.endswith("/")]
+    strip_prefix = ""
+    if strip_root:
+        tops = {n.split("/", 1)[0] for n in names if "/" in n}
+        only_tops = {n for n in names if "/" not in n}
+        if len(tops) == 1 and not only_tops:
+            strip_prefix = next(iter(tops)) + "/"
+    written = 0; skipped = 0; total = 0
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace("\\", "/").lstrip("/")
+        if strip_prefix and name.startswith(strip_prefix):
+            name = name[len(strip_prefix):]
+        if not name:
+            continue
+        parts = name.split("/")
+        if any(p in SKIP for p in parts) or any(p.startswith("..") for p in parts):
+            skipped += 1; continue
+        try:
+            target = _safe(dest_dir, name)
+        except ValueError:
+            skipped += 1; continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(info) as s, target.open("wb") as o:
+            shutil.copyfileobj(s, o, length=64 * 1024)
+        written += 1; total += info.file_size
+    return {"ok": True, "files_written": written, "files_skipped": skipped,
+            "total_bytes": total, "stripped_prefix": strip_prefix or None}
 
 
 def _git(args: list[str], cwd: Path) -> tuple[int, str, str]:

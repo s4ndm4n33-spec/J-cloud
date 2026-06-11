@@ -126,6 +126,31 @@ export async function uploadFile(project_id, file, path) {
     await client.post(`/projects/${project_id}/upload`, fd, {
       params: { path: path || "" },
       headers: { "Content-Type": "multipart/form-data" },
+      timeout: 5 * 60 * 1000,
+    })
+  ).data;
+}
+export async function uploadZip(project_id, file, { dest = "", strip_root = true } = {}, onProgress) {
+  const fd = new FormData();
+  fd.append("file", file);
+  return (
+    await client.post(`/projects/${project_id}/upload_zip`, fd, {
+      params: { dest, strip_root },
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 10 * 60 * 1000,
+      onUploadProgress: onProgress,
+    })
+  ).data;
+}
+export async function uploadFolder(project_id, files, paths, onProgress) {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f);
+  fd.append("paths", JSON.stringify(paths || []));
+  return (
+    await client.post(`/projects/${project_id}/upload_folder`, fd, {
+      headers: { "Content-Type": "multipart/form-data" },
+      timeout: 10 * 60 * 1000,
+      onUploadProgress: onProgress,
     })
   ).data;
 }
