@@ -1,14 +1,16 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Scroll } from "@phosphor-icons/react";
 import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
+import MigrationLogPanel from "@/components/MigrationLogPanel";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
   { key: "refine", label: "REFINE", model: "GPT-5.2", Icon: Sparkle },
   { key: "gauntlet", label: "GAUNTLET", model: "CLAUDE 4.5", Icon: ShieldCheck },
   { key: "audit", label: "AUDIT", model: "/100", Icon: Gauge },
-  { key: "logs", label: "LOGS", model: "TRACE", Icon: Pulse },
+  { key: "log", label: "LOG", model: "SIGNED", Icon: Scroll },
+  { key: "logs", label: "TRACE", model: "BOOT", Icon: Pulse },
 ];
 
 function truncateTree(tree, depth = 0, lines = []) {
@@ -61,6 +63,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
           <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} onAICall={onAICall} />
         )}
         {tab === "audit" && <AuditPanel project={project} onAICall={onAICall} />}
+        {tab === "log" && <MigrationLogPanel project={project} onAICall={onAICall} />}
         {tab === "logs" && <LogsTab />}
       </div>
     </div>
