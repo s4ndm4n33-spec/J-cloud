@@ -1605,15 +1605,3 @@ app.add_middleware(
 @app.on_event("shutdown")
 async def _shutdown():
     client.close()
-
-
-# ---------- MOUNT ----------
-
-app.include_router(api)
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
