@@ -41,6 +41,10 @@ from core.keyvault import SUPPORTED_PROVIDERS, decrypt_key, encrypt_key, mask
 from core.migration_log import (
     ensure_log, log_audit, log_manual, log_session_start, log_tool_event, read_log,
 )
+from core.persistence import (
+    associative_recall, associative_record, chronos_append, chronos_read,
+    heuristic_get, heuristic_update, render_signature,
+)
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
 from core.scoring import audit_project
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
@@ -1107,6 +1111,50 @@ async def get_migration_log(project_id: str, user: dict = Depends(get_current_us
     return {"content": read_log(base), "path": ".gauntlet/migration.log.md"}
 
 
+# ---------- RECURSIVE TEMPORAL PERSISTENCE ----------
+
+
+@api.get("/projects/{project_id}/chronos")
+async def chronos_get(project_id: str, limit: int = 100, event_type: Optional[str] = None,
+                      user: dict = Depends(get_current_user)):
+    base = project_path(user["user_id"], project_id)
+    return {"entries": chronos_read(base, limit=limit, event_type=event_type)}
+
+
+@api.post("/projects/{project_id}/chronos")
+async def chronos_post(project_id: str, payload: dict,
+                       user: dict = Depends(get_current_user)):
+    base = project_path(user["user_id"], project_id)
+    entry = chronos_append(
+        base,
+        event_type=payload.get("event_type", "decision"),
+        file=payload.get("file"),
+        action=payload.get("action", ""),
+        rationale=payload.get("rationale", ""),
+        master=payload.get("master", ""),
+        sentiment=payload.get("sentiment", "neutral"),
+        actor=payload.get("actor") or (user.get("name") or "USER"),
+        extra=payload.get("extra"),
+    )
+    return {"ok": True, "entry": entry}
+
+
+@api.get("/memory/signature")
+async def memory_signature(user: dict = Depends(get_current_user)):
+    return await heuristic_get(db, user["user_id"])
+
+
+@api.post("/memory/recall")
+async def memory_recall(payload: dict, user: dict = Depends(get_current_user)):
+    q = payload.get("query", "")
+    k = int(payload.get("k", 5))
+    project_id = payload.get("project_id")
+    if not q:
+        return {"hits": []}
+    hits = await associative_recall(db, user["user_id"], query=q, k=k, project_id=project_id)
+    return {"hits": hits}
+
+
 @api.post("/projects/{project_id}/migration_log")
 async def add_migration_log(project_id: str, payload: dict,
                             user: dict = Depends(get_current_user)):
@@ -1385,6 +1433,24 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     })
     transcript_for_llm.append(f"[USER]\n{message}")
 
+    # Recursive Temporal Persistence — index, profile, recall
+    await associative_record(db, user["user_id"], project_id=project_id,
+                              role="user", content=message, kind="chat")
+    await heuristic_update(db, user["user_id"], message)
+    recalled = await associative_recall(db, user["user_id"], query=message,
+                                         k=5, project_id=project_id)
+    signature = await heuristic_get(db, user["user_id"])
+    sig_line = render_signature(signature)
+    if recalled or sig_line:
+        ctx_block = ["[J:MEMORY]"]
+        if sig_line:
+            ctx_block.append(sig_line)
+        if recalled:
+            ctx_block.append("Top relevant past context:")
+            for r in recalled:
+                ctx_block.append(f"  - ({r['score']}) [{r['role']}] {r['content'][:200]}")
+        transcript_for_llm.append("\n".join(ctx_block))
+
     gh_token = await _resolve_github_token(user["user_id"])
     ctx = ToolContext(base=base, user_id=user["user_id"],
                       project_id=project_id, github_token=gh_token)
@@ -1427,6 +1493,26 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
                 log.warning(f"migration log write failed: {e}")
             steps.append({"type": "tool", "name": call["name"], "args": call.get("args", {}),
                           "result": result})
+            # Chronos + Associative — code-driven, deterministic
+            try:
+                chronos_append(
+                    base,
+                    event_type="tool_call",
+                    file=call.get("args", {}).get("path"),
+                    action=call["name"],
+                    rationale=prose[:200] if prose else "",
+                    sentiment="rejection" if result.get("error") else "approval",
+                    actor="J",
+                    extra={"exit": result.get("exit_code"),
+                           "blocked": "BLOCKED" in (result.get("error", "") or "")},
+                )
+            except OSError:
+                pass
+            await associative_record(
+                db, user["user_id"], project_id=project_id,
+                role="tool", content=f"{call['name']} -> {json.dumps(result)[:600]}",
+                kind="tool",
+            )
             await db.messages.insert_one({
                 "conversation_id": conversation_id, "user_id": user["user_id"],
                 "role": "tool", "name": call["name"],
