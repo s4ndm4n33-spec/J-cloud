@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from "react";
-import { File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight, Upload, DownloadSimple, Archive, FolderPlus } from "@phosphor-icons/react";
-import { uploadFile, uploadZip, uploadFolder, downloadUrl, downloadZipUrl } from "@/lib/api";
+import { File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight, Upload, DownloadSimple, Archive, FolderPlus, Trash } from "@phosphor-icons/react";
+import { uploadFile, uploadZip, uploadFolder, downloadUrl, downloadZipUrl, deleteFile } from "@/lib/api";
 
 function flatten(tree, openMap, depth = 0, out = []) {
   for (const n of tree) {
@@ -98,6 +98,16 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     if (!projectId) return;
     window.open(downloadZipUrl(projectId), "_blank");
   }
+  async function handleDelete(path) {
+    if (!projectId) return;
+    if (!window.confirm(`Delete "${path}"? This cannot be undone.`)) return;
+    try {
+      await deleteFile(projectId, path);
+      onRefresh?.();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Delete failed");
+    }
+  }
 
   return (
     <div
@@ -191,9 +201,15 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
               <button
                 onClick={() => handleDownload(row.path)}
                 title="Download"
-                className="text-alloy hover:text-cyan px-2 opacity-0 group-hover:opacity-100"
+                className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
                 data-testid={`tree-download-${row.path}`}
               ><DownloadSimple size={10} /></button>
+              <button
+                onClick={() => handleDelete(row.path)}
+                title="Delete"
+                className="text-alloy hover:text-orange px-1.5 opacity-0 group-hover:opacity-100"
+                data-testid={`tree-delete-${row.path}`}
+              ><Trash size={10} /></button>
             </div>
           );
         })}

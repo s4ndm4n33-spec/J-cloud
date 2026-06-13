@@ -43,6 +43,14 @@ TOOL_SPEC: list[dict[str, Any]] = [
     # Exec
     {"name": "run_command", "desc": "Run a shell command in the workspace. Destructive patterns halt and require user override. timeout default 120s, max 600s — use longer for npm install / pip install / cargo build.",
      "args": {"cmd": "string", "timeout": "int seconds (default 120, max 600)"}},
+    {"name": "install_package", "desc": "Install one or more packages with a specific package manager. Long-running (600s).",
+     "args": {"manager": "'pip' | 'npm' | 'yarn' | 'cargo' | 'go' | 'gem' | 'composer' | 'apt'",
+              "packages": "list of strings",
+              "dev": "bool — install as dev dependency where supported"}},
+    {"name": "install_extensions", "desc": "Install the curated 'essentials' bundle for a language (testing + linting + formatting tools). 600s timeout.",
+     "args": {"language": "'python' | 'node' | 'typescript' | 'rust' | 'go'"}},
+    {"name": "compile_file", "desc": "Compile a single source file using the toolchain native to its language (C/C++ via gcc, Java via javac, Rust via rustc, Go via 'go build', TypeScript via tsc).",
+     "args": {"path": "string", "output": "optional output path"}},
     # Project build
     {"name": "detect_project", "desc": "Inspect the workspace and report what kind of project it is (node, python, rust, go, etc.) + suggested install/build/test commands.",
      "args": {}},
@@ -298,8 +306,89 @@ def _detect_kind(base: Path) -> dict[str, Any]:
     return {"primary": primary, "manifests": found, "suggested": suggestions}
 
 
-async def _tool_detect_project(ctx: ToolContext) -> dict:
-    return _detect_kind(ctx.base)
+EXTENSION_BUNDLES = {
+    "python": {"manager": "pip", "packages": ["pytest", "ruff", "black", "mypy"], "dev": False},
+    "node": {"manager": "npm", "packages": ["eslint", "prettier", "jest", "nodemon"], "dev": True},
+    "typescript": {"manager": "npm", "packages": ["typescript", "@types/node", "eslint", "prettier", "ts-node"], "dev": True},
+    "rust": {"manager": "cargo", "packages": ["clippy", "rustfmt"], "dev": False},
+    "go": {"manager": "go", "packages": ["golang.org/x/tools/cmd/goimports", "honnef.co/go/tools/cmd/staticcheck"], "dev": False},
+}
+
+
+def _install_cmd(manager: str, packages: list[str], dev: bool = False) -> str:
+    pkgs = " ".join(packages)
+    if manager == "pip":
+        return f"pip install {pkgs}"
+    if manager == "npm":
+        flag = "--save-dev" if dev else "--save"
+        return f"npm install {flag} {pkgs}"
+    if manager == "yarn":
+        flag = "--dev" if dev else ""
+        return f"yarn add {flag} {pkgs}".strip()
+    if manager == "cargo":
+        # Cargo components for clippy/rustfmt, otherwise cargo add
+        components = {"clippy", "rustfmt"}
+        if all(p in components for p in packages):
+            return "rustup component add " + " ".join(packages)
+        return "cargo add " + pkgs
+    if manager == "go":
+        return "go install " + " ".join(f"{p}@latest" for p in packages)
+    if manager == "gem":
+        return "gem install " + pkgs
+    if manager == "composer":
+        flag = "--dev" if dev else ""
+        return f"composer require {flag} {pkgs}".strip()
+    if manager == "apt":
+        # Sandboxed environments rarely permit apt. Try userland anyway; surface failure.
+        return f"apt-get install -y --no-install-recommends {pkgs}"
+    return f"echo unsupported manager: {manager}"
+
+
+async def _tool_install_package(ctx: ToolContext, manager: str,
+                                packages: list[str] | str,
+                                dev: bool = False) -> dict:
+    if isinstance(packages, str):
+        packages = packages.split()
+    if not packages:
+        return {"error": "no packages given"}
+    cmd = _install_cmd(manager, packages, dev)
+    return {"manager": manager, "packages": packages, "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_install_extensions(ctx: ToolContext, language: str) -> dict:
+    bundle = EXTENSION_BUNDLES.get(language.lower())
+    if not bundle:
+        return {"error": f"unknown language: {language}. Supported: {list(EXTENSION_BUNDLES)}"}
+    return await _tool_install_package(ctx, **bundle)
+
+
+COMPILE_CMDS = {
+    ".c":   lambda src, out: f"gcc -O2 -Wall -o {out} {src}",
+    ".cpp": lambda src, out: f"g++ -O2 -std=c++17 -Wall -o {out} {src}",
+    ".cc":  lambda src, out: f"g++ -O2 -std=c++17 -Wall -o {out} {src}",
+    ".rs":  lambda src, out: f"rustc -O -o {out} {src}",
+    ".go":  lambda src, out: f"go build -o {out} {src}",
+    ".java": lambda src, out: f"javac -d $(dirname {out}) {src}",
+    ".ts":  lambda src, out: f"tsc --outFile {out} {src}",
+    ".kt":  lambda src, out: f"kotlinc {src} -include-runtime -d {out}",
+}
+
+
+async def _tool_compile_file(ctx: ToolContext, path: str, output: str = "") -> dict:
+    src = _safe(ctx.base, path)
+    if not src.is_file():
+        return {"error": f"Not a file: {path}"}
+    ext = src.suffix.lower()
+    builder = COMPILE_CMDS.get(ext)
+    if not builder:
+        return {"error": f"No native compiler mapping for {ext}. Use run_command for custom builds."}
+    out = output or str(src.with_suffix("").relative_to(ctx.base))
+    out_path = _safe(ctx.base, out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = builder(src.relative_to(ctx.base).as_posix(), out_path.relative_to(ctx.base).as_posix())
+    return {"src": path, "output": out, "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=300))}
 
 
 async def _tool_install_deps(ctx: ToolContext) -> dict:
@@ -307,6 +396,10 @@ async def _tool_install_deps(ctx: ToolContext) -> dict:
     cmd = info["suggested"].get("install", "true")
     return {"detected": info["primary"], "cmd": cmd,
             **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_detect_project(ctx: ToolContext) -> dict:
+    return _detect_kind(ctx.base)
 
 
 async def _tool_build_project(ctx: ToolContext) -> dict:
@@ -442,6 +535,13 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "search_code": _tool_search_code,
     "find_files": _tool_find_files,
     "run_command": _tool_run_command,
+    "detect_project": _tool_detect_project,
+    "install_deps": _tool_install_deps,
+    "install_package": _tool_install_package,
+    "install_extensions": _tool_install_extensions,
+    "compile_file": _tool_compile_file,
+    "build_project": _tool_build_project,
+    "extract_zip": _tool_extract_zip,
     "git_status": _tool_git_status,
     "git_commit": _tool_git_commit,
     "github_clone": _tool_github_clone,
