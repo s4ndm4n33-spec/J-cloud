@@ -50,28 +50,36 @@
   - Git Panel with branch, changes, commit, log.
 
 ## Testing
-- 15/15 backend pytest tests pass (`/app/backend/tests/test_gauntlet_devspace.py`).
-- Frontend smoke: sign-in landing renders, IDE shell loads, file open works, single-tab dedupe verified, Gauntlet HUD updates.
-- AI endpoints: budget-exhausted path verified to return graceful offline string (no 500).
+- 65/65 backend pytest tests pass as of iter4 (`/app/backend/tests/`).
+- iter3: Bearer-token + localStorage auth fallback for mobile (45/45 + 7/7 frontend).
+- iter4: Ollama BYOK + Tutorial overlay + Bearer-only logout fix (20/20 new + 45/45 regression = 65/65 + frontend Tutorial/Settings flows).
+- Frontend smoke: sign-in landing renders, IDE shell loads, file open works, single-tab dedupe verified, Gauntlet HUD updates, Tutorial auto-launches with 8-step spotlight tour.
 
 ## Test credentials
 See `/app/memory/test_credentials.md`.
 
+## Recently implemented (2026-06-18)
+- **Mobile Android OAuth fix**: `/api/auth/session` now returns the `session_token` in JSON body in addition to the `Set-Cookie`. `api.js` stores it in `localStorage` (`gauntlet_session_token`) and an axios request interceptor attaches `Authorization: Bearer <token>` on every request. `get_current_user` falls back to the Bearer header when the cookie is absent. `AuthCallback` now uses `window.location.replace('/ide')` (hard navigate) to avoid the React state race; it also extracts `session_id` from both URL hash AND query string. Closes the infinite-redirect loop on Android Chrome (which blocks third-party cookies on cross-origin OAuth bounces).
+- **Bearer-only logout invalidation**: `/api/auth/logout` now accepts Authorization header and deletes the `user_sessions` row by whichever token is present. No more zombie sessions when mobile users sign out.
+- **Mobile UI polish**: removed `pr-28` clipping on the bottom dock so the `J` button reaches the right edge; AI drawer is now `w-screen max-w-md`.
+- **Ollama / llama.cpp local-server BYOK** (first-class 4th provider): SUPPORTED_PROVIDERS = ('openai', 'anthropic', 'gemini', 'ollama'). Stored as `base_url` + `default_model` (no API key). `_call_ollama` uses `openai.AsyncOpenAI` against `{base_url}/v1` — works for Ollama, llama.cpp-server, and vLLM out of the box. New endpoint `POST /api/settings/keys/ollama/test` smoke-pings `/api/tags` then falls back to `/v1/models` so users see CONNECTED/OFFLINE instead of guessing. Ollama is appended as the LAST step in every TASK_CHAIN (chat/refine/governance) — only runs when Universal Key + cloud BYOK are exhausted or absent.
+- **Settings UX**: SettingsModal now has a dedicated Ollama section with preset chips (ollama → :11434, llama-cpp → :8080), URL + model fields, TEST CONNECTION button (green CONNECTED / orange OFFLINE pill with model list), LINK SERVER button. Resolved-chain panel renders 5 steps per task with ARMED/SKIP gating including the new Ollama row.
+- **Interactive Tutorial**: 8-step coachmark overlay (`Tutorial.jsx`) with spotlight cutout, target-element highlight ring, progress bar, NEXT/BACK/SKIP/GO BUILD controls. Auto-launches on first `/ide` load (server flag `users.tutorial_completed`). Always-available `?` replay button in the TopBar. Steps: Welcome → Top Bar → Project switcher → File Tree → Monaco → AI Coworker → Settings (BYOK/Universal/Ollama explained) → "Go build". Endpoints: `GET/POST /api/me/tutorial`.
+
 ## Backlog / P1
-- Settings panel for users to provide their own LLM keys (avoid Universal Key budget exhaustion).
 - Multi-cursor inline-diff editor for InlineEditModal output (currently full-block replace).
 - File rename / drag-and-drop in tree.
-- Git: branch creation/switch UI, push to remote (currently local only).
+- Git: branch creation/switch UI, push to remote (PAT works; full OAuth pending user credentials).
 - Per-master deterministic auto-fix (port the 8 AST transforms from upstream `app/agent/transforms.py`).
-- Workspace persistence beyond preview pod lifetime (move workspaces to MongoDB GridFS or S3-compatible storage).
+- Workspace persistence beyond preview pod lifetime (MongoDB GridFS or S3-compatible storage).
 
 ## P2
 - Terminal: PTY-backed streaming session via WebSocket (currently request-response).
-- Live Preview: dev-server proxy for SPA projects (currently raw `index.html` only).
-- Five Masters language pack: native AST analyzers for JS/TS/Rust/Go (currently heuristic).
-- Telemetry HUD: real uptime, AST pass-rate, refine count micro-numerics in corners.
+- Live Preview: dev-server proxy for SPA projects.
+- Five Masters language pack: native AST analyzers for JS/TS/Rust/Go.
+- Refactor: split `server.py` (1766 lines) into `/app/backend/routes/{auth,keys,ai,projects,github,tutorial,audit}.py`.
 
 ## Next Action Items
-1. Top-up Emergent Universal Key (Profile → Universal Key → Add Balance) — current budget exhausted so chat/refine/governance return graceful offline messages until topped up.
-2. Optional: implement the BYO-key settings panel so users can plug in their own provider keys.
-3. Optional: integrate the upstream 8 deterministic AST transforms (`/optimize` flow) for one-click Gauntlet fix.
+1. Push fixes live: hit **Deploy** to roll the mobile-OAuth fix + Ollama support + Tutorial out to blue-j-gauntlet.com.
+2. Optional: pull a small model (`ollama pull llama3.1`) on a private host to validate the local-server failover end-to-end.
+3. Optional: top up Emergent Universal Key (Profile → Universal Key → Add Balance) if the budget is exhausted.
