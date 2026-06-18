@@ -1,13 +1,25 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
 
+const IN_APP_BROWSER_RE = /(FBAN|FBAV|Instagram|Twitter|Line|MicroMessenger|Snapchat|TikTok|Pinterest|LinkedInApp|Discord|Telegram|WhatsApp|GSA|wv\)|; wv;)/i;
+
+function isInAppBrowser() {
+  if (typeof navigator === "undefined") return false;
+  return IN_APP_BROWSER_RE.test(navigator.userAgent || "");
+}
+
 export default function SignIn() {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const [inApp, setInApp] = useState(false);
+
+  useEffect(() => {
+    setInApp(isInAppBrowser());
+  }, []);
 
   useEffect(() => {
     if (!loading && user) navigate("/ide", { replace: true });
@@ -71,6 +83,20 @@ export default function SignIn() {
             </svg>
             CONTINUE WITH GOOGLE
           </button>
+
+          {inApp && (
+            <div
+              className="mt-4 p-3 border border-orange/50 bg-orange/5 font-mono text-[0.7rem] text-orange leading-relaxed"
+              data-testid="inapp-warning"
+            >
+              <div className="font-display tracking-[0.2em] text-[0.65rem] mb-1">// IN-APP BROWSER DETECTED</div>
+              Google blocks sign-in from in-app browsers (Gmail, Discord, Instagram, Telegram, etc.).
+              Tap the <span className="text-cyan">⋮</span> menu and choose <span className="text-cyan">"Open in Chrome"</span> or copy this URL into Chrome directly.
+              <div className="mt-2 break-all text-alloy text-[0.65rem]">
+                {typeof window !== "undefined" ? window.location.origin : ""}
+              </div>
+            </div>
+          )}
 
           <div className="mt-6 font-mono text-[0.65rem] text-alloy tracking-widest">
             <span className="text-cyan">/&gt;</span> ENCRYPTED · ZERO-TELEMETRY · OAUTH 2.0
