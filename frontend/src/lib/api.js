@@ -202,3 +202,21 @@ export async function createAgent(payload) {
 export async function deleteAgent(agent_id) {
   return (await client.delete(`/agents/${agent_id}`)).data;
 }
+
+// ----- Tutorial -----
+export async function getTutorialState() {
+  return (await client.get("/me/tutorial")).data;
+}
+export async function setTutorialState(completed) {
+  return (await client.post("/me/tutorial", { completed })).data;
+}
+
+// ----- Ollama / local server -----
+export async function testOllama(base_url) {
+  return (await client.post("/settings/keys/ollama/test", { base_url })).data;
+}
+export async function saveOllama(base_url, default_model) {
+  return (await client.put("/settings/keys", {
+    provider: "ollama", base_url, default_model,
+  })).data;
+}

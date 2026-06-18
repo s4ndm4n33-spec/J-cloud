@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import {
   listProjects, createProject, projectTree, readFile, writeFile,
+  getTutorialState,
 } from "@/lib/api";
 import TopBar from "@/components/TopBar";
 import LeftRail from "@/components/LeftRail";
@@ -15,6 +16,7 @@ import LivePreview from "@/components/LivePreview";
 import InlineEditModal from "@/components/InlineEditModal";
 import HardBlockModal from "@/components/HardBlockModal";
 import ChainTelemetry from "@/components/ChainTelemetry";
+import Tutorial from "@/components/Tutorial";
 
 export default function IDE() {
   const { user } = useAuth();
@@ -32,6 +34,17 @@ export default function IDE() {
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 900);
   // mobile drawer: null | "left" | "right" | "bottom"
   const [mobileDrawer, setMobileDrawer] = useState(null);
+  // tutorial: null = not checked yet, false = dismissed/done, true = show
+  const [tutorialOpen, setTutorialOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await getTutorialState();
+        if (!r.completed) setTutorialOpen(true);
+      } catch { /* ignore */ }
+    })();
+  }, []);
 
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 900);
@@ -153,6 +166,7 @@ export default function IDE() {
         gauntletStatus={gauntletStatus}
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
+        onOpenTutorial={() => setTutorialOpen(true)}
       />
 
       <div className="flex-1 flex min-h-0 relative">
@@ -354,6 +368,8 @@ export default function IDE() {
           }}
         />
       )}
+
+      {tutorialOpen && <Tutorial onClose={() => setTutorialOpen(false)} />}
     </div>
   );
 }

@@ -35,7 +35,7 @@ def _get_fernet() -> Fernet:
 
 _fernet = _get_fernet()
 
-SUPPORTED_PROVIDERS = ("openai", "anthropic", "gemini")
+SUPPORTED_PROVIDERS = ("openai", "anthropic", "gemini", "ollama")
 
 
 def encrypt_key(plain: str) -> str:

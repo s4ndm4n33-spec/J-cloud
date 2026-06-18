@@ -171,9 +171,13 @@ async def auth_me(user: dict = Depends(get_current_user)):
 async def auth_logout(
     response: Response,
     session_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
 ):
-    if session_token:
-        await db.user_sessions.delete_one({"session_token": session_token})
+    token = session_token
+    if not token and authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
     response.delete_cookie("session_token", path="/")
     return {"ok": True}
 
@@ -566,12 +570,25 @@ def _build_context_block(payload: dict) -> str:
     return "\n\n".join(parts)
 
 
-async def _resolve_byok(user_id: str, provider: str) -> Optional[str]:
-    """Return BYO key for provider, or None if not configured."""
+async def _resolve_byok(user_id: str, provider: str) -> Optional[Any]:
+    """Return BYO config for provider.
+
+    Cloud providers (openai/anthropic/gemini) → returns the decrypted api_key string.
+    Ollama / local OpenAI-compatible server → returns dict {base_url, default_model}.
+    Returns None when not configured.
+    """
     doc = await db.user_provider_keys.find_one(
         {"user_id": user_id, "provider": provider}, {"_id": 0}
     )
-    if doc and doc.get("ciphertext"):
+    if not doc:
+        return None
+    if provider == "ollama":
+        base_url = doc.get("base_url") or ""
+        default_model = doc.get("default_model") or ""
+        if not base_url or not default_model:
+            return None
+        return {"base_url": base_url, "default_model": default_model}
+    if doc.get("ciphertext"):
         try:
             return decrypt_key(doc["ciphertext"])
         except (ValueError, TypeError):
@@ -581,33 +598,63 @@ async def _resolve_byok(user_id: str, provider: str) -> Optional[str]:
 
 # Task chains: Universal first, then BYO of preferred provider, then BYO of others.
 # Each step: (source, provider, model). source = "universal" or "byok".
+# Ollama model "user-default" means: use whatever default_model the user saved.
 TASK_CHAINS: dict[str, list[tuple[str, str, str]]] = {
     "chat": [
         ("universal", "gemini",    "gemini-3-flash-preview"),
         ("byok",      "gemini",    "gemini-3-flash-preview"),
         ("byok",      "openai",    "gpt-5.4-mini"),
         ("byok",      "anthropic", "claude-haiku-4-5-20251001"),
+        ("byok",      "ollama",    "user-default"),
     ],
     "refine": [
         ("universal", "openai",    "gpt-5.2"),
         ("byok",      "openai",    "gpt-5.2"),
         ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
         ("byok",      "gemini",    "gemini-3-flash-preview"),
+        ("byok",      "ollama",    "user-default"),
     ],
     "governance": [
         ("universal", "anthropic", "claude-sonnet-4-5-20250929"),
         ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
         ("byok",      "openai",    "gpt-5.4"),
         ("byok",      "gemini",    "gemini-3.1-pro-preview"),
+        ("byok",      "ollama",    "user-default"),
     ],
 }
 
 
-async def _single_call(api_key: str, provider: str, model: str,
+async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
+    """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM)."""
+    from openai import AsyncOpenAI
+    base = base_url.rstrip("/")
+    # Ollama and llama.cpp both expose /v1 OpenAI-compat endpoints.
+    if not base.endswith("/v1"):
+        base = base + "/v1"
+    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=60.0)
+    resp = await client_ai.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_text},
+        ],
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content or ""
+
+
+async def _single_call(api_key_or_cfg: Any, provider: str, model: str,
                        system: str, user_text: str, session_id: str) -> str:
+    if provider == "ollama":
+        cfg = api_key_or_cfg if isinstance(api_key_or_cfg, dict) else {}
+        chosen_model = model if model != "user-default" else cfg.get("default_model", "")
+        if not chosen_model:
+            raise RuntimeError("Ollama default model not configured")
+        return await _call_ollama(cfg["base_url"], chosen_model, system, user_text)
+
     from emergentintegrations.llm.chat import LlmChat, UserMessage
     chat = LlmChat(
-        api_key=api_key,
+        api_key=api_key_or_cfg,
         session_id=session_id,
         system_message=system,
     ).with_model(provider, model)
@@ -697,6 +744,24 @@ async def _record_telemetry(user_id: str, meta: dict) -> None:
 
 # ---------- SETTINGS / BYOK ----------
 
+OLLAMA_PRESETS = {
+    "ollama":     "http://localhost:11434",
+    "llama-cpp":  "http://localhost:8080",
+}
+
+
+def _valid_local_url(url: str) -> bool:
+    """Accept http(s)://host[:port] — keep it permissive but reject obvious junk."""
+    if not isinstance(url, str):
+        return False
+    u = url.strip()
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return False
+    if " " in u or len(u) > 256:
+        return False
+    return True
+
+
 @api.get("/settings/keys")
 async def list_keys(user: dict = Depends(get_current_user)):
     docs = await db.user_provider_keys.find(
@@ -707,23 +772,58 @@ async def list_keys(user: dict = Depends(get_current_user)):
     for prov in SUPPORTED_PROVIDERS:
         if prov in have:
             d = have[prov]
-            out.append({
+            entry = {
                 "provider": prov,
                 "configured": True,
                 "masked": d.get("masked", ""),
                 "updated_at": d.get("updated_at"),
-            })
+            }
+            if prov == "ollama":
+                entry["base_url"] = d.get("base_url", "")
+                entry["default_model"] = d.get("default_model", "")
+            out.append(entry)
         else:
-            out.append({"provider": prov, "configured": False, "masked": "", "updated_at": None})
-    return {"providers": out, "universal_key_available": bool(EMERGENT_LLM_KEY)}
+            entry = {"provider": prov, "configured": False, "masked": "", "updated_at": None}
+            if prov == "ollama":
+                entry["base_url"] = ""
+                entry["default_model"] = ""
+            out.append(entry)
+    return {
+        "providers": out,
+        "universal_key_available": bool(EMERGENT_LLM_KEY),
+        "ollama_presets": OLLAMA_PRESETS,
+    }
 
 
 @api.put("/settings/keys")
 async def set_key(payload: dict, user: dict = Depends(get_current_user)):
     provider = payload.get("provider", "")
-    api_key = (payload.get("api_key") or "").strip()
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=400, detail="Unsupported provider")
+
+    if provider == "ollama":
+        base_url = (payload.get("base_url") or "").strip()
+        default_model = (payload.get("default_model") or "").strip()
+        if not _valid_local_url(base_url):
+            raise HTTPException(status_code=400, detail="Invalid base URL (must start with http:// or https://)")
+        if not default_model:
+            raise HTTPException(status_code=400, detail="Default model is required (e.g., llama3.1)")
+        doc = {
+            "user_id": user["user_id"],
+            "provider": provider,
+            "base_url": base_url,
+            "default_model": default_model,
+            "masked": f"{base_url} · {default_model}",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.user_provider_keys.update_one(
+            {"user_id": user["user_id"], "provider": provider},
+            {"$set": doc},
+            upsert=True,
+        )
+        return {"ok": True, "provider": provider, "masked": doc["masked"]}
+
+    api_key = (payload.get("api_key") or "").strip()
     if not api_key or len(api_key) < 12:
         raise HTTPException(status_code=400, detail="Invalid API key")
     doc = {
@@ -749,6 +849,56 @@ async def delete_key(provider: str, user: dict = Depends(get_current_user)):
         {"user_id": user["user_id"], "provider": provider}
     )
     return {"ok": True, "provider": provider}
+
+
+@api.post("/settings/keys/ollama/test")
+async def test_ollama(payload: dict, user: dict = Depends(get_current_user)):
+    """Smoke-test the user's Ollama / llama.cpp endpoint. Tries /api/tags then falls
+    back to OpenAI-compat /v1/models. Returns models list on success.
+    """
+    base_url = (payload.get("base_url") or "").strip()
+    if not _valid_local_url(base_url):
+        raise HTTPException(status_code=400, detail="Invalid base URL")
+    base = base_url.rstrip("/")
+    async with httpx.AsyncClient(timeout=8.0) as http:
+        # Try Ollama native first
+        try:
+            r = await http.get(f"{base}/api/tags")
+            if r.status_code == 200:
+                data = r.json()
+                models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+                return {"ok": True, "backend": "ollama", "models": models}
+        except (httpx.HTTPError, ValueError):
+            pass
+        # Fall back to OpenAI-compat
+        try:
+            r = await http.get(f"{base}/v1/models")
+            if r.status_code == 200:
+                data = r.json()
+                models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+                return {"ok": True, "backend": "openai-compat", "models": models}
+        except (httpx.HTTPError, ValueError) as e:
+            return {"ok": False, "error": f"Unreachable: {e}"}
+    return {"ok": False, "error": "Endpoint did not respond to /api/tags or /v1/models"}
+
+
+# ---------- TUTORIAL STATE ----------
+
+@api.get("/me/tutorial")
+async def tutorial_state(user: dict = Depends(get_current_user)):
+    completed = bool(user.get("tutorial_completed", False))
+    return {"completed": completed}
+
+
+@api.post("/me/tutorial")
+async def set_tutorial_state(payload: dict, user: dict = Depends(get_current_user)):
+    completed = bool(payload.get("completed", True))
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"tutorial_completed": completed,
+                  "tutorial_updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "completed": completed}
 
 
 @api.post("/ai/chat")
@@ -1573,10 +1723,16 @@ async def ai_chain(user: dict = Depends(get_current_user)):
         for source, provider, model in steps:
             if source == "universal":
                 runnable = bool(EMERGENT_LLM_KEY)
+                shown_model = model
             else:
-                runnable = bool(await _resolve_byok(user["user_id"], provider))
+                cfg = await _resolve_byok(user["user_id"], provider)
+                runnable = bool(cfg)
+                if provider == "ollama" and runnable and isinstance(cfg, dict):
+                    shown_model = cfg.get("default_model", model)
+                else:
+                    shown_model = model
             resolved.append({
-                "source": source, "provider": provider, "model": model,
+                "source": source, "provider": provider, "model": shown_model,
                 "runnable": runnable,
             })
         out[task] = resolved

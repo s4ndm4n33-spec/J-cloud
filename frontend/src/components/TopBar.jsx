@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix } from "@phosphor-icons/react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
 
@@ -8,7 +8,7 @@ const LOGO_URL =
 
 export default function TopBar({
   user, projects, activeProject, onProjectChange, onNewProject,
-  gauntletStatus, previewOpen, onTogglePreview,
+  gauntletStatus, previewOpen, onTogglePreview, onOpenTutorial,
 }) {
   const { signOut } = useAuth();
   const [creating, setCreating] = useState(false);
@@ -104,6 +104,16 @@ export default function TopBar({
       </button>
 
       <div className="hidden sm:block h-6 w-px bg-cyan/15"></div>
+      {onOpenTutorial && (
+        <button
+          data-testid="help-button"
+          onClick={onOpenTutorial}
+          title="Replay tutorial"
+          className="text-alloy hover:text-cyan transition-colors"
+        >
+          <Question size={14} weight="bold" />
+        </button>
+      )}
       <button
         data-testid="settings-button"
         onClick={() => setSettingsOpen(true)}
