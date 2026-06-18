@@ -285,7 +285,7 @@ export default function IDE() {
         <div
           className={
             isMobile
-              ? `fixed inset-y-12 right-0 z-30 w-[92vw] max-w-md border-l border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
+              ? `fixed inset-y-12 right-0 z-30 w-screen max-w-md border-l border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
                   mobileDrawer === "right" ? "translate-x-0" : "translate-x-full"
                 }`
               : "w-[26rem] border-l border-cyan/10 bg-midnight/80 flex flex-col min-w-0"
@@ -324,7 +324,7 @@ export default function IDE() {
 
       {/* Mobile bottom dock */}
       {isMobile && (
-        <div className="h-12 border-t border-cyan/15 bg-midnight flex items-stretch z-30 pr-28" data-testid="mobile-dock">
+        <div className="h-12 border-t border-cyan/15 bg-midnight flex items-stretch z-30" data-testid="mobile-dock">
           <DockButton label="FILES" active={mobileDrawer === "left"} onClick={() => setMobileDrawer(mobileDrawer === "left" ? null : "left")} testid="dock-files" />
           <DockButton label="TERM" active={mobileDrawer === "bottom"} onClick={() => setMobileDrawer(mobileDrawer === "bottom" ? null : "bottom")} testid="dock-terminal" />
           <DockButton label="J" active={mobileDrawer === "right"} onClick={() => setMobileDrawer(mobileDrawer === "right" ? null : "right")} testid="dock-ai" />

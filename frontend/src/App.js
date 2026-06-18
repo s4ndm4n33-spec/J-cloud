@@ -19,10 +19,16 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function hasOAuthSession(location) {
+  if (location.hash?.includes("session_id=")) return true;
+  if (location.search?.includes("session_id=")) return true;
+  return false;
+}
+
 function AppRouter() {
   const location = useLocation();
-  // Race-free OAuth callback handling — fragment containing session_id wins
-  if (location.hash?.includes("session_id=")) {
+  // Race-free OAuth callback handling — fragment or query containing session_id wins
+  if (hasOAuthSession(location)) {
     return <AuthCallback />;
   }
   return (

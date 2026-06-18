@@ -157,7 +157,9 @@ async def auth_session(payload: dict, response: Response):
         key="session_token", value=session_token, path="/",
         max_age=7 * 24 * 3600, httponly=True, secure=True, samesite="none",
     )
-    return {"user": user}
+    # Also return token in body so mobile (where 3rd-party cookies are blocked)
+    # can store it in localStorage and send via Authorization: Bearer header.
+    return {"user": user, "session_token": session_token}
 
 
 @api.get("/auth/me")

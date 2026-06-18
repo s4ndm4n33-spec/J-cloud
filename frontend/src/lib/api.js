@@ -3,13 +3,36 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
+export const TOKEN_KEY = "gauntlet_session_token";
+
+export function getStoredToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+export function setStoredToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode */ }
+}
+
 const client = axios.create({
   baseURL: API,
   withCredentials: true,
 });
 
+// Attach Bearer fallback for mobile / blocked-3p-cookies scenarios.
+client.interceptors.request.use((config) => {
+  const t = getStoredToken();
+  if (t) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${t}`;
+  }
+  return config;
+});
+
 export async function exchangeSession(session_id) {
   const r = await client.post("/auth/session", { session_id });
+  if (r.data?.session_token) setStoredToken(r.data.session_token);
   return r.data;
 }
 export async function me() {
@@ -17,7 +40,7 @@ export async function me() {
   return r.data;
 }
 export async function logout() {
-  await client.post("/auth/logout");
+  try { await client.post("/auth/logout"); } finally { setStoredToken(null); }
 }
 
 export async function listProjects() {
