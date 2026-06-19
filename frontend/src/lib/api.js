@@ -211,6 +211,14 @@ export async function setTutorialState(completed) {
   return (await client.post("/me/tutorial", { completed })).data;
 }
 
+// ----- Private Mode -----
+export async function getPrivateMode() {
+  return (await client.get("/me/private-mode")).data;
+}
+export async function setPrivateMode(enabled) {
+  return (await client.post("/me/private-mode", { enabled })).data;
+}
+
 // ----- Ollama / local server -----
 export async function testOllama(base_url) {
   return (await client.post("/settings/keys/ollama/test", { base_url })).data;

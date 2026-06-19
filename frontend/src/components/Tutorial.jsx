@@ -39,6 +39,11 @@ const STEPS = [
     body: "Three ways to power J: 1) Emergent Universal Key (default, free credits), 2) Your own OpenAI / Anthropic / Gemini keys (BYOK), 3) Your own Ollama / llama.cpp server (private, self-hosted). They auto-failover in that order — no extra config.",
   },
   {
+    selector: '[data-testid="private-mode-toggle"]',
+    title: "Private Mode · one click.",
+    body: "Tap PUBLIC ↔ PRIVATE to lock J to your local server only. Cloud and Universal Key are skipped entirely until you flip back. Requires a linked local server in Settings.",
+  },
+  {
     selector: null,
     title: "You're armed. Go build.",
     body: "Hard rule: destructive code is blocked until you approve with the override password. Everything you do is logged to migration.log.md (signed). Welcome to the rig.",

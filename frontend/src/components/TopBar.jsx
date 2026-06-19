@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question } from "@phosphor-icons/react";
+import { useState, useEffect } from "react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
+import { getPrivateMode, setPrivateMode } from "@/lib/api";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
@@ -14,6 +15,40 @@ export default function TopBar({
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [privateOn, setPrivateOn] = useState(false);
+  const [ollamaReady, setOllamaReady] = useState(false);
+  const [pmBusy, setPmBusy] = useState(false);
+  const [pmError, setPmError] = useState(null);
+
+  async function refreshPrivate() {
+    try {
+      const r = await getPrivateMode();
+      setPrivateOn(!!r.enabled);
+      setOllamaReady(!!r.ollama_ready);
+    } catch { /* ignore */ }
+  }
+  useEffect(() => { refreshPrivate(); }, []);
+  // Re-poll after Settings closes (user may have just linked Ollama)
+  useEffect(() => { if (!settingsOpen) refreshPrivate(); }, [settingsOpen]);
+
+  async function togglePrivate() {
+    if (pmBusy) return;
+    const next = !privateOn;
+    if (next && !ollamaReady) {
+      setPmError("Link your local server first");
+      setSettingsOpen(true);
+      setTimeout(() => setPmError(null), 4000);
+      return;
+    }
+    setPmBusy(true);
+    try {
+      const r = await setPrivateMode(next);
+      setPrivateOn(!!r.enabled);
+    } catch (e) {
+      setPmError(e?.response?.data?.detail || "Toggle failed");
+      setTimeout(() => setPmError(null), 4000);
+    } finally { setPmBusy(false); }
+  }
 
   const score = gauntletStatus?.score ?? 5;
   const passColor = score >= 4 ? "var(--viridian)" : score >= 2 ? "var(--orange)" : "#FF2D55";
@@ -93,6 +128,39 @@ export default function TopBar({
         </div>
         <span className="font-mono text-[0.7rem] text-cyan">{score}/5</span>
       </div>
+
+      {/* Private Mode toggle */}
+      <button
+        data-testid="private-mode-toggle"
+        onClick={togglePrivate}
+        disabled={pmBusy}
+        title={
+          privateOn
+            ? "PRIVATE — only your local server runs. Click to allow cloud + Universal Key again."
+            : ollamaReady
+              ? "PUBLIC — Universal Key + cloud BYOK + local server. Click to lock to local only."
+              : "Link a local server in Settings to enable Private Mode."
+        }
+        className={`inline-flex items-center gap-1.5 px-2 py-1 border font-display text-[0.65rem] tracking-[0.2em] transition-colors ${
+          privateOn
+            ? "border-cyan text-cyan bg-cyan/10 shadow-[0_0_12px_rgba(0,217,255,0.3)]"
+            : ollamaReady
+              ? "border-cyan/30 text-alloy hover:text-cyan hover:border-cyan/60"
+              : "border-alloy/20 text-alloy/60 hover:text-alloy"
+        } ${pmBusy ? "opacity-50" : ""}`}
+      >
+        {privateOn ? <Lock size={12} weight="fill" /> : <LockOpen size={12} weight="regular" />}
+        <span data-testid="private-mode-label">{privateOn ? "PRIVATE" : "PUBLIC"}</span>
+      </button>
+
+      {pmError && (
+        <div
+          className="absolute top-12 right-3 mt-1 panel px-3 py-2 font-mono text-[0.7rem] text-orange border border-orange/40"
+          data-testid="private-mode-error"
+        >
+          {pmError}
+        </div>
+      )}
 
       <button
         data-testid="toggle-preview"

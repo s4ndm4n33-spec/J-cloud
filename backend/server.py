@@ -668,9 +668,19 @@ async def _chain_call(user_id: str, task: str, system: str, user_text: str,
     """Run the LLM call through the failover chain. Returns (reply, metadata).
 
     Metadata: {success: bool, step_used: {...}, attempts: [...], total_ms: int}.
+
+    When the user has private_mode=True, the chain is filtered to ollama-only
+    steps so neither the Universal Key nor any cloud BYOK is ever touched.
     """
     import time as _time
     chain = TASK_CHAINS.get(task, TASK_CHAINS["chat"])
+
+    # Apply Private Mode filter
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "private_mode": 1})
+    private_mode = bool(user_doc and user_doc.get("private_mode"))
+    if private_mode:
+        chain = [s for s in chain if s[1] == "ollama"]
+
     attempts: list[dict] = []
     chain_started = _time.perf_counter()
 
@@ -899,6 +909,31 @@ async def set_tutorial_state(payload: dict, user: dict = Depends(get_current_use
                   "tutorial_updated_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"ok": True, "completed": completed}
+
+
+@api.get("/me/private-mode")
+async def get_private_mode(user: dict = Depends(get_current_user)):
+    enabled = bool(user.get("private_mode", False))
+    ollama_cfg = await _resolve_byok(user["user_id"], "ollama")
+    return {"enabled": enabled, "ollama_ready": bool(ollama_cfg)}
+
+
+@api.post("/me/private-mode")
+async def set_private_mode(payload: dict, user: dict = Depends(get_current_user)):
+    enabled = bool(payload.get("enabled", False))
+    if enabled:
+        ollama_cfg = await _resolve_byok(user["user_id"], "ollama")
+        if not ollama_cfg:
+            raise HTTPException(
+                status_code=400,
+                detail="Link a local server (Ollama / llama.cpp) in Settings before enabling Private Mode.",
+            )
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"private_mode": enabled,
+                  "private_mode_updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "enabled": enabled}
 
 
 @api.post("/ai/chat")
@@ -1717,6 +1752,7 @@ async def ai_agent_history(conversation_id: str, user: dict = Depends(get_curren
 @api.get("/ai/chain")
 async def ai_chain(user: dict = Depends(get_current_user)):
     """Show the resolved failover chain for each task (which steps will actually run)."""
+    private_mode = bool(user.get("private_mode", False))
     out: dict[str, list[dict]] = {}
     for task, steps in TASK_CHAINS.items():
         resolved = []
@@ -1731,12 +1767,15 @@ async def ai_chain(user: dict = Depends(get_current_user)):
                     shown_model = cfg.get("default_model", model)
                 else:
                     shown_model = model
+            # Private Mode: only ollama is allowed to run
+            if private_mode and provider != "ollama":
+                runnable = False
             resolved.append({
                 "source": source, "provider": provider, "model": shown_model,
                 "runnable": runnable,
             })
         out[task] = resolved
-    return {"chains": out}
+    return {"chains": out, "private_mode": private_mode}
 
 
 @api.get("/")
