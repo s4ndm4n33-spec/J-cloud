@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import "@/App.css";
+import "@/lib/monaco-setup"; // Force Monaco to use bundled copy (no CDN dependency)
 import SignIn from "@/pages/SignIn";
 import AuthCallback from "@/pages/AuthCallback";
 import IDE from "@/pages/IDE";
