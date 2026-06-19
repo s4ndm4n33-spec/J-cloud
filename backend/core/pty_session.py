@@ -115,17 +115,13 @@ j-help() {
 """
 
 
-_RC_PATH: Optional[Path] = None
-
-
 def _ensure_rcfile() -> str:
-    """Write the bash rcfile once per process startup."""
-    global _RC_PATH
-    if _RC_PATH and _RC_PATH.exists():
-        return str(_RC_PATH)
-    p = Path("/tmp/j_devspace_bashrc")
-    p.write_text(BASHRC_CONTENT)
-    _RC_PATH = p
+    """Write the bash rcfile, content-addressed so edits propagate automatically."""
+    import hashlib
+    h = hashlib.sha1(BASHRC_CONTENT.encode("utf-8")).hexdigest()[:8]
+    p = Path(f"/tmp/j_devspace_bashrc_{h}")
+    if not p.exists():
+        p.write_text(BASHRC_CONTENT)
     return str(p)
 
 

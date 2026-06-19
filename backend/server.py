@@ -509,6 +509,10 @@ async def terminal_exec(payload: dict, user: dict = Depends(get_current_user)):
 
 # ---------- INTERACTIVE PTY-BACKED TERMINAL (WebSocket) ----------
 
+_MAX_SHELLS_PER_USER = 5
+_user_shell_count: dict[str, int] = {}
+
+
 async def _user_from_token(token: Optional[str], cookie_token: Optional[str]) -> Optional[dict]:
     """Resolve a user from either ?token=... or session_token cookie."""
     raw = token or cookie_token
@@ -535,8 +539,19 @@ async def terminal_ws(
         await websocket.close(code=4401)
         return
 
+    uid = user["user_id"]
+    if _user_shell_count.get(uid, 0) >= _MAX_SHELLS_PER_USER:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "msg": f"too many open shells ({_MAX_SHELLS_PER_USER}/user) — close an existing terminal first.",
+        })
+        await websocket.close(code=4429)
+        return
+
     base = project_path(user["user_id"], project_id)
     await websocket.accept()
+    _user_shell_count[uid] = _user_shell_count.get(uid, 0) + 1
 
     session = PtySession(cwd=str(base))
     try:
@@ -583,6 +598,7 @@ async def terminal_ws(
         await asyncio.gather(pump_pty_to_ws(), pump_ws_to_pty())
     finally:
         session.close()
+        _user_shell_count[uid] = max(0, _user_shell_count.get(uid, 1) - 1)
         try:
             await websocket.close()
         except RuntimeError:
