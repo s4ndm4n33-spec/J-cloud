@@ -58,7 +58,8 @@
 ## Test credentials
 See `/app/memory/test_credentials.md`.
 
-## Recently implemented (2026-06-18)
+## Recently implemented (2026-06-18 → 2026-06-19)
+- **Private Mode toggle (2026-06-19)**: One-click `PUBLIC ↔ PRIVATE` pill in the TopBar (Lock/LockOpen icon, cyan glow when active). When PRIVATE, the chain filter inside `_chain_call` strips every non-ollama step, so neither the Universal Key nor any cloud BYOK is ever touched. New endpoints `GET/POST /api/me/private-mode`; backend refuses to enable when no local server is linked (400 with a clear message). `GET /api/ai/chain` now returns a top-level `private_mode` bool and reports every cloud step as `runnable:false` when on — so the Settings Resolved-Chain panel updates live. Tutorial gained a 9th step explaining the toggle. 76/76 backend tests + full frontend Playwright flow pass.
 - **Mobile Android OAuth fix**: `/api/auth/session` now returns the `session_token` in JSON body in addition to the `Set-Cookie`. `api.js` stores it in `localStorage` (`gauntlet_session_token`) and an axios request interceptor attaches `Authorization: Bearer <token>` on every request. `get_current_user` falls back to the Bearer header when the cookie is absent. `AuthCallback` now uses `window.location.replace('/ide')` (hard navigate) to avoid the React state race; it also extracts `session_id` from both URL hash AND query string. Closes the infinite-redirect loop on Android Chrome (which blocks third-party cookies on cross-origin OAuth bounces).
 - **Bearer-only logout invalidation**: `/api/auth/logout` now accepts Authorization header and deletes the `user_sessions` row by whichever token is present. No more zombie sessions when mobile users sign out.
 - **Mobile UI polish**: removed `pr-28` clipping on the bottom dock so the `J` button reaches the right edge; AI drawer is now `w-screen max-w-md`.
