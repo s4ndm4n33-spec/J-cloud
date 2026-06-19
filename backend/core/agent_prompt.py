@@ -1,8 +1,17 @@
 """J's agent loop prompt — gives the LLM the ability to call workspace tools."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from .persona import J_BASE_PROMPT
 from .tools import render_tool_spec
+
+
+_TERMINAL_REF_PATH = Path(__file__).parent / "terminal_reference.md"
+try:
+    _TERMINAL_REF = _TERMINAL_REF_PATH.read_text(encoding="utf-8")
+except OSError:
+    _TERMINAL_REF = "(terminal reference file missing — be cautious with shell suggestions)"
 
 
 AGENT_PROMPT = J_BASE_PROMPT + f"""
@@ -41,6 +50,13 @@ RULES
 - Read before write when modifying existing files. Use read_file first.
 - Keep total tool calls per turn ≤ 6. Use multiple turns for larger tasks.
 - After done is emitted, the loop stops. The 'summary' goes to the user.
+
+============================================================================
+TERMINAL REFERENCE — read this before suggesting ANY shell command.
+You will be corrected if you contradict these facts.
+============================================================================
+{_TERMINAL_REF}
+============================================================================
 
 {render_tool_spec()}
 """

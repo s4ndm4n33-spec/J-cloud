@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import APIRouter, Cookie, Depends, FastAPI, File, Header, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
@@ -46,6 +46,7 @@ from core.persistence import (
     heuristic_get, heuristic_update, render_signature,
 )
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
+from core.pty_session import PtySession
 from core.scoring import audit_project
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
 
@@ -490,16 +491,102 @@ async def terminal_exec(payload: dict, user: dict = Depends(get_current_user)):
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, "PATH": os.environ.get("PATH", "")},
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
         return {
             "stdout": stdout.decode("utf-8", errors="replace"),
             "stderr": stderr.decode("utf-8", errors="replace"),
             "exit_code": proc.returncode,
         }
     except asyncio.TimeoutError:
-        return {"stdout": "", "stderr": "Timeout (30s)", "exit_code": 124}
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        return {"stdout": "", "stderr": "Timeout (300s) — for long-running daemons use the interactive terminal.", "exit_code": 124}
     except OSError as e:
         return {"stdout": "", "stderr": f"Exec error: {e}", "exit_code": 1}
+
+
+# ---------- INTERACTIVE PTY-BACKED TERMINAL (WebSocket) ----------
+
+async def _user_from_token(token: Optional[str], cookie_token: Optional[str]) -> Optional[dict]:
+    """Resolve a user from either ?token=... or session_token cookie."""
+    raw = token or cookie_token
+    if not raw:
+        return None
+    sess = await db.user_sessions.find_one(
+        {"session_token": raw, "expires_at": {"$gt": datetime.now(timezone.utc).isoformat()}},
+        {"_id": 0},
+    )
+    if not sess:
+        return None
+    return await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
+
+
+@app.websocket("/api/terminal/ws")
+async def terminal_ws(
+    websocket: WebSocket,
+    project_id: str = Query(...),
+    token: Optional[str] = Query(default=None),
+):
+    cookie_token = websocket.cookies.get("session_token")
+    user = await _user_from_token(token, cookie_token)
+    if not user:
+        await websocket.close(code=4401)
+        return
+
+    base = project_path(user["user_id"], project_id)
+    await websocket.accept()
+
+    session = PtySession(cwd=str(base))
+    try:
+        await session.start()
+    except OSError as e:
+        await websocket.send_json({"type": "error", "msg": f"shell start failed: {e}"})
+        await websocket.close()
+        return
+
+    async def pump_pty_to_ws():
+        while not session.closed:
+            data = await session.read()
+            if not data:
+                break
+            try:
+                await websocket.send_bytes(data)
+            except (WebSocketDisconnect, RuntimeError):
+                break
+
+    async def pump_ws_to_pty():
+        try:
+            while not session.closed:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                if "text" in msg and msg["text"] is not None:
+                    # control frames: resize, ping
+                    try:
+                        ctrl = json.loads(msg["text"])
+                    except (ValueError, TypeError):
+                        session.write(msg["text"].encode("utf-8"))
+                        continue
+                    if ctrl.get("type") == "resize":
+                        session.set_size(int(ctrl.get("cols", 80)),
+                                         int(ctrl.get("rows", 24)))
+                    elif ctrl.get("type") == "input":
+                        session.write(str(ctrl.get("data", "")).encode("utf-8"))
+                elif "bytes" in msg and msg["bytes"] is not None:
+                    session.write(msg["bytes"])
+        except WebSocketDisconnect:
+            pass
+
+    try:
+        await asyncio.gather(pump_pty_to_ws(), pump_ws_to_pty())
+    finally:
+        session.close()
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass
 
 
 # ---------- GIT ----------
