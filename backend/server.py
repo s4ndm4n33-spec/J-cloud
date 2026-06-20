@@ -594,8 +594,24 @@ async def terminal_ws(
         except WebSocketDisconnect:
             pass
 
+    pty_task = asyncio.create_task(pump_pty_to_ws())
+    ws_task = asyncio.create_task(pump_ws_to_pty())
     try:
-        await asyncio.gather(pump_pty_to_ws(), pump_ws_to_pty())
+        # As soon as EITHER pump exits (client disconnect or PTY EOF), tear down
+        # the other one so the shell counter slot is released immediately.
+        done, pending = await asyncio.wait(
+            {pty_task, ws_task}, return_when=asyncio.FIRST_COMPLETED,
+        )
+        # Closing the session causes pump_pty_to_ws's queue.get() to return b""
+        # and cancels its loop. Cancelling pending also closes the WS task cleanly.
+        session.close()
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except (asyncio.CancelledError, WebSocketDisconnect, OSError):
+                pass
     finally:
         session.close()
         _user_shell_count[uid] = max(0, _user_shell_count.get(uid, 1) - 1)
