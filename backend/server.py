@@ -1630,22 +1630,42 @@ async def download_file(project_id: str, path: str,
 
 
 @api.get("/projects/{project_id}/download_zip")
-async def download_zip(project_id: str, user: dict = Depends(get_current_user)):
+async def download_zip(project_id: str, path: str = "",
+                       user: dict = Depends(get_current_user)):
+    """Download a project — or a specific folder inside it — as a .zip.
+
+    `path=""` (default) zips the whole project (legacy behavior).
+    `path="src/utils"` zips just that sub-folder. The archive's internal paths
+    are rooted at the requested folder name so unzipping reproduces it locally.
+    """
     base = project_path(user["user_id"], project_id)
+    if path:
+        target = safe_join(base, path)
+        if not target.exists() or not target.is_dir():
+            raise HTTPException(status_code=404, detail="Folder not found")
+        zip_root = target
+        zip_name = target.name or project_id
+        path_prefix = target.name + "/"
+    else:
+        zip_root = base
+        zip_name = project_id
+        path_prefix = ""
+
     import io
     import zipfile
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in base.rglob("*"):
+        for p in zip_root.rglob("*"):
             if any(part in (".git", "node_modules", "__pycache__", ".venv")
                    for part in p.parts):
                 continue
             if p.is_file():
-                zf.write(p, p.relative_to(base).as_posix())
+                rel = p.relative_to(zip_root).as_posix()
+                zf.write(p, path_prefix + rel)
     buf.seek(0)
     return StreamingResponse(
         buf, media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{project_id}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}.zip"'},
     )
 
 

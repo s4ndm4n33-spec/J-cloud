@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef } from "react";
 import { File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight, Upload, DownloadSimple, Archive, FolderPlus, Trash } from "@phosphor-icons/react";
-import { uploadFile, uploadZip, uploadFolder, downloadUrl, downloadZipUrl, deleteFile } from "@/lib/api";
+import { uploadFile, uploadZip, uploadFolder, downloadUrl, downloadProjectZip, deleteFile } from "@/lib/api";
 
 function flatten(tree, openMap, depth = 0, out = []) {
   for (const n of tree) {
@@ -94,9 +94,13 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
   function handleDownload(path) {
     window.open(downloadUrl(projectId, path), "_blank");
   }
-  function handleDownloadZip() {
+  async function handleDownloadZip(folderPath = "") {
     if (!projectId) return;
-    window.open(downloadZipUrl(projectId), "_blank");
+    try {
+      await downloadProjectZip(projectId, folderPath);
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Download failed");
+    }
   }
   async function handleDelete(path) {
     if (!projectId) return;
@@ -171,17 +175,33 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
           const isActive = row.type === "file" && row.path === activePath;
           if (row.type === "dir") {
             return (
-              <button
+              <div
                 key={`d:${row.path}`}
-                data-testid={`tree-dir-${row.path}`}
-                onClick={() => toggle(row.path)}
-                className="w-full flex items-center gap-1 px-2 py-1 hover:bg-cyan/5 text-left text-[0.78rem] text-gridwhite/90"
+                className="group flex items-center hover:bg-cyan/5"
                 style={{ paddingLeft: 6 + row.depth * 12 }}
               >
-                {row.isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
-                {row.isOpen ? <FolderOpen size={14} className="text-cyan" /> : <Folder size={14} className="text-alloy" />}
-                <span className="font-mono">{row.name}</span>
-              </button>
+                <button
+                  data-testid={`tree-dir-${row.path}`}
+                  onClick={() => toggle(row.path)}
+                  className="flex-1 flex items-center gap-1 py-1 text-left text-[0.78rem] text-gridwhite/90"
+                >
+                  {row.isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
+                  {row.isOpen ? <FolderOpen size={14} className="text-cyan" /> : <Folder size={14} className="text-alloy" />}
+                  <span className="font-mono">{row.name}</span>
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDownloadZip(row.path); }}
+                  title={`Download "${row.name}" as zip`}
+                  className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
+                  data-testid={`tree-download-dir-${row.path}`}
+                ><Archive size={10} /></button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleDelete(row.path); }}
+                  title={`Delete "${row.name}"`}
+                  className="text-alloy hover:text-orange px-1.5 opacity-0 group-hover:opacity-100"
+                  data-testid={`tree-delete-dir-${row.path}`}
+                ><Trash size={10} /></button>
+              </div>
             );
           }
           return (

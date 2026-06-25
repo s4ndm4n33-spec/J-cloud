@@ -188,8 +188,31 @@ export async function uploadFolder(project_id, files, paths, onProgress) {
 export function downloadUrl(project_id, path) {
   return `${API}/projects/${project_id}/download?path=${encodeURIComponent(path)}`;
 }
-export function downloadZipUrl(project_id) {
-  return `${API}/projects/${project_id}/download_zip`;
+export function downloadZipUrl(project_id, folderPath = "") {
+  const q = folderPath ? `?path=${encodeURIComponent(folderPath)}` : "";
+  return `${API}/projects/${project_id}/download_zip${q}`;
+}
+
+/**
+ * Auth-aware zip download. Goes through the axios client so the Bearer token
+ * (mobile / blocked-3p-cookies) gets attached, then triggers a blob download.
+ */
+export async function downloadProjectZip(project_id, folderPath = "") {
+  const url = `/projects/${project_id}/download_zip${
+    folderPath ? `?path=${encodeURIComponent(folderPath)}` : ""
+  }`;
+  const r = await client.get(url, { responseType: "blob" });
+  const filename = folderPath
+    ? `${folderPath.split("/").filter(Boolean).pop() || project_id}.zip`
+    : `${project_id}.zip`;
+  const blobUrl = URL.createObjectURL(r.data);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
 // ----- Agents -----
