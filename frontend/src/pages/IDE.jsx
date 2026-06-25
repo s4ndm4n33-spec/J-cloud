@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
 import { useAuth } from "@/context/AuthContext";
 import {
   listProjects, createProject, projectTree, readFile, writeFile,
@@ -32,6 +33,10 @@ export default function IDE() {
   const [hardBlock, setHardBlock] = useState(null); // { matches, intent, onConfirm(token) }
   const [gauntletStatus, setGauntletStatus] = useState({ score: 5, issues: 0 });
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 900);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const saved = parseInt(localStorage.getItem("gauntlet-terminal-height") || "260", 10);
+    return Number.isFinite(saved) && saved >= 80 ? saved : 260;
+  });
   // mobile drawer: null | "left" | "right" | "bottom"
   const [mobileDrawer, setMobileDrawer] = useState(null);
   // tutorial: null = not checked yet, false = dismissed/done, true = show
@@ -169,72 +174,108 @@ export default function IDE() {
         onOpenTutorial={() => setTutorialOpen(true)}
       />
 
-      <div className="flex-1 flex min-h-0 relative">
-        {!isMobile && <LeftRail active={leftView} onChange={setLeftView} />}
+      {(() => {
+        const leftPanelBody = (
+          <>
+            {isMobile && (
+              <div className="flex border-b border-cyan/10">
+                {["files", "git", "gauntlet"].map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setLeftView(k)}
+                    className={`flex-1 py-2 font-display text-[0.65rem] tracking-[0.2em] ${
+                      leftView === k ? "text-cyan border-b border-cyan" : "text-alloy"
+                    }`}
+                    data-testid={`mobile-left-${k}`}
+                  >{k.toUpperCase()}</button>
+                ))}
+              </div>
+            )}
+            {leftView === "files" && (
+              <FileTree
+                tree={tree}
+                onOpen={(p) => { openFile(p); if (isMobile) setMobileDrawer(null); }}
+                onRefresh={refreshTree}
+                activePath={activeTab}
+                projectId={activeProject?.project_id}
+              />
+            )}
+            {leftView === "git" && activeProject && (
+              <GitHubPanel
+                projectId={activeProject.project_id}
+                onRefresh={refreshTree}
+                onProjectCloned={(p) => {
+                  setProjects((prev) => [...prev, p]);
+                  setActiveProject(p);
+                }}
+              />
+            )}
+            {leftView === "gauntlet" && (
+              <div className="p-4 text-sm text-alloy">
+                <div className="font-display text-cyan tracking-widest text-xs mb-3">GAUNTLET SUMMARY</div>
+                <div className="font-mono text-xs">
+                  Current file score:{" "}
+                  <span className="text-cyan">{activeTabObj?.score?.score ?? "-"} / 5</span>
+                </div>
+                <div className="mt-1 font-mono text-xs">
+                  Issues: <span className="text-orange">{activeTabObj?.score?.issues?.length ?? 0}</span>
+                </div>
+                <div className="mt-4 text-[0.7rem] leading-relaxed">
+                  Open a file and hit the <span className="text-cyan">GAUNTLET</span> tab to run the
+                  Five Masters review (Claude Sonnet 4.5).
+                </div>
+              </div>
+            )}
+          </>
+        );
 
-        {/* Left panel: files / git / gauntlet snapshot. On mobile: drawer overlay */}
-        <div
-          className={
-            isMobile
-              ? `fixed inset-y-12 left-0 z-30 w-72 border-r border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
-                  mobileDrawer === "left" ? "translate-x-0" : "-translate-x-full"
-                }`
-              : "w-64 border-r border-cyan/10 bg-midnight/80 flex flex-col"
-          }
-        >
-          {isMobile && (
-            <div className="flex border-b border-cyan/10">
-              {["files", "git", "gauntlet"].map((k) => (
+        const bottomPanelBody = (
+          <>
+            <div className="flex items-center border-b border-cyan/10">
+              <button
+                data-testid="bottom-tab-terminal"
+                onClick={() => setBottomTab("terminal")}
+                className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
+                  bottomTab === "terminal" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
+                }`}
+              >TERMINAL</button>
+              <button
+                data-testid="bottom-tab-problems"
+                onClick={() => setBottomTab("problems")}
+                className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
+                  bottomTab === "problems" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
+                }`}
+              >
+                PROBLEMS <span className="ml-2 font-mono text-orange">{activeTabObj?.score?.issues?.length ?? 0}</span>
+              </button>
+              {isMobile && (
                 <button
-                  key={k}
-                  onClick={() => setLeftView(k)}
-                  className={`flex-1 py-2 font-display text-[0.65rem] tracking-[0.2em] ${
-                    leftView === k ? "text-cyan border-b border-cyan" : "text-alloy"
-                  }`}
-                  data-testid={`mobile-left-${k}`}
-                >{k.toUpperCase()}</button>
-              ))}
+                  onClick={() => setMobileDrawer(null)}
+                  className="ml-auto px-3 py-2 text-alloy hover:text-orange font-display text-[0.7rem]"
+                  data-testid="mobile-close-bottom"
+                >CLOSE</button>
+              )}
+              {!isMobile && (
+                <span className="ml-auto pr-3 font-mono text-[0.6rem] text-alloy/60">
+                  // drag the divider to resize
+                </span>
+              )}
             </div>
-          )}
-          {leftView === "files" && (
-            <FileTree
-              tree={tree}
-              onOpen={(p) => { openFile(p); if (isMobile) setMobileDrawer(null); }}
-              onRefresh={refreshTree}
-              activePath={activeTab}
-              projectId={activeProject?.project_id}
-            />
-          )}
-          {leftView === "git" && activeProject && (
-            <GitHubPanel
-              projectId={activeProject.project_id}
-              onRefresh={refreshTree}
-              onProjectCloned={(p) => {
-                setProjects((prev) => [...prev, p]);
-                setActiveProject(p);
-              }}
-            />
-          )}
-          {leftView === "gauntlet" && (
-            <div className="p-4 text-sm text-alloy">
-              <div className="font-display text-cyan tracking-widest text-xs mb-3">GAUNTLET SUMMARY</div>
-              <div className="font-mono text-xs">
-                Current file score:{" "}
-                <span className="text-cyan">{activeTabObj?.score?.score ?? "-"} / 5</span>
-              </div>
-              <div className="mt-1 font-mono text-xs">
-                Issues: <span className="text-orange">{activeTabObj?.score?.issues?.length ?? 0}</span>
-              </div>
-              <div className="mt-4 text-[0.7rem] leading-relaxed">
-                Open a file and hit the <span className="text-cyan">GAUNTLET</span> tab to run the
-                Five Masters review (Claude Sonnet 4.5).
-              </div>
+            <div className="flex-1 min-h-0">
+              {bottomTab === "terminal" && activeProject && (
+                <TerminalPane projectId={activeProject.project_id} onHardBlock={setHardBlock} />
+              )}
+              {bottomTab === "problems" && (
+                <ProblemsPanel
+                  issues={activeTabObj?.score?.issues || []}
+                  language={activeTabObj?.language}
+                />
+              )}
             </div>
-          )}
-        </div>
+          </>
+        );
 
-        {/* Center: editor + bottom panel */}
-        <div className="flex-1 flex flex-col min-w-0">
+        const editorBody = (
           <EditorPane
             tabs={tabs}
             activeTab={activeTab}
@@ -245,66 +286,9 @@ export default function IDE() {
             editorRef={editorRef}
             onCmdK={() => setInlineOpen(true)}
           />
+        );
 
-          {/* Bottom (terminal/problems) — hidden on mobile by default, accessed via drawer */}
-          {(!isMobile || mobileDrawer === "bottom") && (
-            <div
-              className={
-                isMobile
-                  ? "fixed inset-x-0 bottom-12 top-1/2 z-30 border-t border-cyan/10 flex flex-col bg-midnight shadow-2xl"
-                  : "h-64 border-t border-cyan/10 flex flex-col bg-midnight/60"
-              }
-            >
-              <div className="flex items-center border-b border-cyan/10">
-                <button
-                  data-testid="bottom-tab-terminal"
-                  onClick={() => setBottomTab("terminal")}
-                  className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
-                    bottomTab === "terminal" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
-                  }`}
-                >TERMINAL</button>
-                <button
-                  data-testid="bottom-tab-problems"
-                  onClick={() => setBottomTab("problems")}
-                  className={`px-4 py-2 font-display text-[0.7rem] tracking-[0.25em] ${
-                    bottomTab === "problems" ? "text-cyan border-b-2 border-cyan" : "text-alloy"
-                  }`}
-                >
-                  PROBLEMS <span className="ml-2 font-mono text-orange">{activeTabObj?.score?.issues?.length ?? 0}</span>
-                </button>
-                {isMobile && (
-                  <button
-                    onClick={() => setMobileDrawer(null)}
-                    className="ml-auto px-3 py-2 text-alloy hover:text-orange font-display text-[0.7rem]"
-                    data-testid="mobile-close-bottom"
-                  >CLOSE</button>
-                )}
-              </div>
-              <div className="flex-1 min-h-0">
-                {bottomTab === "terminal" && activeProject && (
-                  <TerminalPane projectId={activeProject.project_id} onHardBlock={setHardBlock} />
-                )}
-                {bottomTab === "problems" && (
-                  <ProblemsPanel
-                    issues={activeTabObj?.score?.issues || []}
-                    language={activeTabObj?.language}
-                  />
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Right: AI coworker. On mobile: drawer from right */}
-        <div
-          className={
-            isMobile
-              ? `fixed inset-y-12 right-0 z-30 w-screen max-w-md border-l border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
-                  mobileDrawer === "right" ? "translate-x-0" : "translate-x-full"
-                }`
-              : "w-[26rem] border-l border-cyan/10 bg-midnight/80 flex flex-col min-w-0"
-          }
-        >
+        const aiPanelBody = (
           <AICoworker
             project={activeProject}
             activeTab={activeTabObj}
@@ -313,26 +297,126 @@ export default function IDE() {
             onApplyRefined={(code) => updateTabContent(activeTab, code)}
             onAICall={() => telemetryRef.current?.refresh()}
           />
-        </div>
+        );
 
-        {/* Drawer scrim on mobile */}
-        {isMobile && mobileDrawer && (
-          <div
-            onClick={() => setMobileDrawer(null)}
-            className="fixed inset-0 z-20 bg-midnight/60 backdrop-blur-sm"
-            data-testid="mobile-scrim"
-          />
-        )}
+        if (isMobile) {
+          return (
+            <div className="flex-1 flex min-h-0 relative">
+              <div
+                className={`fixed inset-y-12 left-0 z-30 w-72 border-r border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
+                  mobileDrawer === "left" ? "translate-x-0" : "-translate-x-full"
+                }`}
+              >{leftPanelBody}</div>
 
-        {/* Slide-in preview */}
-        {previewOpen && activeProject && (
-          <LivePreview
-            projectId={activeProject.project_id}
-            onClose={() => setPreviewOpen(false)}
-            backendUrl={process.env.REACT_APP_BACKEND_URL}
-          />
-        )}
-      </div>
+              <div className="flex-1 flex flex-col min-w-0">
+                {editorBody}
+                {mobileDrawer === "bottom" && (
+                  <div className="fixed inset-x-0 bottom-12 top-1/2 z-30 border-t border-cyan/10 flex flex-col bg-midnight shadow-2xl">
+                    {bottomPanelBody}
+                  </div>
+                )}
+              </div>
+
+              <div
+                className={`fixed inset-y-12 right-0 z-30 w-screen max-w-md border-l border-cyan/10 bg-midnight flex flex-col transform transition-transform duration-200 ease-out ${
+                  mobileDrawer === "right" ? "translate-x-0" : "translate-x-full"
+                }`}
+              >{aiPanelBody}</div>
+
+              {mobileDrawer && (
+                <div
+                  onClick={() => setMobileDrawer(null)}
+                  className="fixed inset-0 z-20 bg-midnight/60 backdrop-blur-sm"
+                  data-testid="mobile-scrim"
+                />
+              )}
+
+              {previewOpen && activeProject && (
+                <LivePreview
+                  projectId={activeProject.project_id}
+                  onClose={() => setPreviewOpen(false)}
+                  backendUrl={process.env.REACT_APP_BACKEND_URL}
+                />
+              )}
+            </div>
+          );
+        }
+
+        // Desktop: full resizable layout. v4 quirks:
+        //   - Numeric size = px; strings = percent
+        //   - Don't add flex/flex-col to Panels — the library handles layout
+        //   - id prop becomes data-testid automatically
+        return (
+          <div className="flex-1 flex min-h-0 relative">
+            <LeftRail active={leftView} onChange={setLeftView} />
+            <PanelGroup direction="horizontal" id="gauntlet-h" className="flex-1">
+              <Panel defaultSize="18" minSize="10" maxSize="45" id="panel-left"
+                     className="border-r border-cyan/10 bg-midnight/80">
+                <div className="h-full flex flex-col">{leftPanelBody}</div>
+              </Panel>
+              <PanelResizeHandle id="resize-handle-left"
+                className="w-1 bg-cyan/10 hover:bg-cyan/40 transition-colors cursor-col-resize" />
+              <Panel defaultSize="56" minSize="25" id="panel-center" className="min-w-0">
+                <div className="h-full flex flex-col">
+                  <div className="flex-1 min-h-0">
+                    {editorBody}
+                  </div>
+                  <div
+                    data-testid="resize-handle-bottom"
+                    role="separator"
+                    aria-orientation="horizontal"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      const startY = e.clientY;
+                      const startH = terminalHeight;
+                      const onMove = (ev) => {
+                        const delta = startY - ev.clientY;
+                        const next = Math.max(80, Math.min(900, startH + delta));
+                        setTerminalHeight(next);
+                      };
+                      const onUp = () => {
+                        document.removeEventListener("mousemove", onMove);
+                        document.removeEventListener("mouseup", onUp);
+                        try {
+                          localStorage.setItem("gauntlet-terminal-height",
+                            String(terminalHeight));
+                        } catch { /* ignore */ }
+                      };
+                      document.addEventListener("mousemove", onMove);
+                      document.addEventListener("mouseup", onUp);
+                    }}
+                    className="h-1.5 bg-cyan/10 hover:bg-cyan/50 cursor-row-resize flex-shrink-0 relative group"
+                  >
+                    <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex justify-center pointer-events-none">
+                      <div className="h-0.5 w-12 bg-cyan/40 group-hover:bg-cyan rounded-full" />
+                    </div>
+                  </div>
+                  <div
+                    className="border-t border-cyan/10 bg-midnight/60 flex-shrink-0 flex flex-col"
+                    style={{ height: terminalHeight }}
+                  >
+                    {bottomPanelBody}
+                  </div>
+                </div>
+              </Panel>
+              <PanelResizeHandle id="resize-handle-right"
+                className="w-1 bg-cyan/10 hover:bg-cyan/40 transition-colors cursor-col-resize" />
+              <Panel defaultSize="26" minSize="15" maxSize="55" id="panel-right"
+                     className="border-l border-cyan/10 bg-midnight/80 min-w-0">
+                <div className="h-full flex flex-col">{aiPanelBody}</div>
+              </Panel>
+            </PanelGroup>
+
+            {previewOpen && activeProject && (
+              <LivePreview
+                projectId={activeProject.project_id}
+                onClose={() => setPreviewOpen(false)}
+                backendUrl={process.env.REACT_APP_BACKEND_URL}
+              />
+            )}
+          </div>
+        );
+      })()}
 
       <ChainTelemetry ref={telemetryRef} />
 

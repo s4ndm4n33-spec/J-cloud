@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Scroll, Download, ShieldCheck, Plus, ArrowsClockwise, X, Robot, User, CircleNotch } from "@phosphor-icons/react";
+import { useEffect, useMemo, useState } from "react";
+import { Scroll, Download, ShieldCheck, Plus, ArrowsClockwise, X, Robot, User, CircleNotch, Funnel, MagnifyingGlass } from "@phosphor-icons/react";
 import {
   listChronicle, listChronicleSessions, addChronicleEntry,
   verifyChronicle, exportChronicle,
@@ -128,6 +128,14 @@ export default function ChroniclePanel({ project }) {
   const [loading, setLoading] = useState(false);
   const [verify, setVerify] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [signers, setSigners] = useState({ J: true, USER: true, SYSTEM: true });
+  // Default: narrative-first view (tool/log entries hidden until you ask)
+  const [kinds, setKinds] = useState({
+    session_start: true, session_end: true, narrative: true,
+    milestone: true, user_note: true, tool: false, proposed: true,
+  });
 
   async function refresh() {
     if (!projectId) return;
@@ -146,6 +154,33 @@ export default function ChroniclePanel({ project }) {
 
   useEffect(() => { refresh(); }, [projectId, selectedSession]);
 
+  // Debounce search query → 200ms
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim().toLowerCase()), 200);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const filtered = useMemo(() => {
+    return entries.filter((e) => {
+      if (!signers[e.signer]) return false;
+      if (!kinds[e.kind]) return false;
+      if (debounced) {
+        const hay = `${e.title || ""}\n${e.body || ""}\n${(e.tags || []).join(" ")}`.toLowerCase();
+        if (!hay.includes(debounced)) return false;
+      }
+      return true;
+    });
+  }, [entries, signers, kinds, debounced]);
+
+  const tally = useMemo(() => {
+    const t = { signers: { J: 0, USER: 0, SYSTEM: 0 }, kinds: {} };
+    for (const e of entries) {
+      if (t.signers[e.signer] !== undefined) t.signers[e.signer]++;
+      t.kinds[e.kind] = (t.kinds[e.kind] || 0) + 1;
+    }
+    return t;
+  }, [entries]);
+
   async function runVerify() {
     if (!projectId) return;
     setVerify("checking");
@@ -160,6 +195,21 @@ export default function ChroniclePanel({ project }) {
   async function doExport() {
     if (!projectId) return;
     await exportChronicle(projectId, selectedSession);
+  }
+
+  function toggleSigner(s) { setSigners((p) => ({ ...p, [s]: !p[s] })); }
+  function toggleKind(k) { setKinds((p) => ({ ...p, [k]: !p[k] })); }
+  function showOnlyTools() {
+    setSigners({ J: true, USER: true, SYSTEM: true });
+    setKinds({ tool: true });
+  }
+  function resetFilters() {
+    setSigners({ J: true, USER: true, SYSTEM: true });
+    setKinds({
+      session_start: true, session_end: true, narrative: true,
+      milestone: true, user_note: true, tool: false, proposed: true,
+    });
+    setQuery("");
   }
 
   if (!projectId) {
@@ -249,6 +299,63 @@ export default function ChroniclePanel({ project }) {
         ))}
       </div>
 
+      {/* search */}
+      <div className="px-3 py-2 border-b border-cyan/10 flex items-center gap-2">
+        <MagnifyingGlass size={11} className="text-alloy" />
+        <input
+          type="text"
+          placeholder="search title, body, tags…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          className="flex-1 bg-midnight border border-cyan/20 px-2 py-1 font-mono text-[0.7rem] text-gridwhite"
+          data-testid="chronicle-search"
+        />
+        {(query || Object.values(kinds).some((v) => !v) || Object.values(signers).some((v) => !v)) && (
+          <button
+            onClick={resetFilters}
+            className="font-mono text-[0.6rem] text-alloy hover:text-cyan"
+            data-testid="chronicle-reset-filters"
+          >reset</button>
+        )}
+      </div>
+
+      {/* filter chips */}
+      <div className="px-3 py-2 border-b border-cyan/10 flex items-center gap-1 flex-wrap">
+        <Funnel size={10} className="text-alloy mr-1" />
+        <span className="font-mono text-[0.6rem] text-alloy mr-1">signer:</span>
+        {["J", "USER", "SYSTEM"].map((s) => (
+          <button
+            key={s}
+            onClick={() => toggleSigner(s)}
+            className={`font-mono text-[0.6rem] px-1.5 py-0.5 border ${
+              signers[s]
+                ? "border-cyan text-cyan bg-cyan/10"
+                : "border-alloy/30 text-alloy/50"
+            }`}
+            data-testid={`chronicle-filter-signer-${s}`}
+          >{s} · {tally.signers[s] || 0}</button>
+        ))}
+        <span className="font-mono text-[0.6rem] text-alloy ml-2 mr-1">kind:</span>
+        {Object.keys(kinds).map((k) => (
+          <button
+            key={k}
+            onClick={() => toggleKind(k)}
+            className={`font-mono text-[0.6rem] px-1.5 py-0.5 border ${
+              kinds[k]
+                ? "border-cyan text-cyan bg-cyan/10"
+                : "border-alloy/30 text-alloy/50"
+            }`}
+            data-testid={`chronicle-filter-kind-${k}`}
+          >{k.replace("_", " ")}{tally.kinds[k] ? ` · ${tally.kinds[k]}` : ""}</button>
+        ))}
+        <button
+          onClick={showOnlyTools}
+          className="font-mono text-[0.6rem] px-1.5 py-0.5 border border-orange/40 text-orange ml-auto hover:bg-orange/10"
+          data-testid="chronicle-only-tools"
+          title="Show only tool-call audit entries (the old SIGNED LOG view)"
+        >only tools</button>
+      </div>
+
       <div className="flex-1 overflow-auto scrollbar-thin p-3 space-y-2">
         {showForm && (
           <NewEntryForm
@@ -261,12 +368,17 @@ export default function ChroniclePanel({ project }) {
         {loading && (
           <div className="font-mono text-[0.7rem] text-alloy text-center py-4">// loading…</div>
         )}
+        {!loading && filtered.length === 0 && entries.length > 0 && (
+          <div className="font-mono text-[0.7rem] text-alloy text-center py-8">
+            // {entries.length} entries hidden by filters. Click <span className="text-cyan">reset</span> above.
+          </div>
+        )}
         {!loading && entries.length === 0 && (
           <div className="font-mono text-[0.7rem] text-alloy text-center py-8">
             // no entries yet. Chat with J or click + to start the chronicle.
           </div>
         )}
-        {entries.map((e) => <EntryCard key={e.entry_id || e.entry_hash} entry={e} />)}
+        {filtered.map((e) => <EntryCard key={e.entry_id || e.entry_hash} entry={e} />)}
       </div>
     </div>
   );

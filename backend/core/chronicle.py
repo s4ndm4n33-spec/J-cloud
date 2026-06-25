@@ -37,6 +37,7 @@ VALID_KINDS = {
     "session_end",    # auto, J-signed
     "narrative",      # J writes a paragraph
     "milestone",      # important fact (commit pushed, deploy, file created)
+    "tool",           # mirrored from agent tool calls — the old "LOG" content
     "user_note",      # user wrote it manually
     "proposed",       # J suggested it; user not yet accepted
 }

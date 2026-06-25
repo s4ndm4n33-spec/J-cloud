@@ -1982,6 +1982,40 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
                                args=call.get("args", {}), result=result)
             except OSError as e:
                 log.warning(f"migration log write failed: {e}")
+            # Mirror milestone / failed tool calls into the chronicle so they
+            # surface under the LOG/TOOL filter alongside narrative entries.
+            try:
+                err = result.get("error")
+                milestone_tools = {
+                    "create_file", "write_file", "delete_file", "move_file",
+                    "extract_zip", "install_deps", "build_project",
+                    "git_commit", "run_command",
+                }
+                if err or call["name"] in milestone_tools:
+                    args_dict = call.get("args", {}) or {}
+                    target = args_dict.get("path") or args_dict.get("command") or ""
+                    title = f"{'FAIL' if err else 'OK'} · {call['name']}"
+                    if target:
+                        title += f" · {str(target)[:80]}"
+                    body_lines = []
+                    if err:
+                        body_lines.append(f"**Error:** {str(err)[:400]}")
+                    elif result.get("exit_code") not in (None, 0):
+                        body_lines.append(f"**Exit code:** {result.get('exit_code')}")
+                    for k in ("files_written", "files_skipped", "total_bytes",
+                              "deleted", "to", "detected"):
+                        if k in result:
+                            body_lines.append(f"**{k}:** {result[k]}")
+                    await chron.append_entry(
+                        db, base,
+                        project_id=project_id, user_id=user["user_id"],
+                        session_id=conversation_id,
+                        kind="tool", signer="J", title=title,
+                        body="\n".join(body_lines),
+                        tags=["tool", call["name"]] + (["fail"] if err else []),
+                    )
+            except Exception as e:
+                log.warning(f"chronicle tool-mirror failed: {e}")
             steps.append({"type": "tool", "name": call["name"], "args": call.get("args", {}),
                           "result": result})
             # Chronos + Associative — code-driven, deterministic
