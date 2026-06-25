@@ -215,7 +215,31 @@ export async function downloadProjectZip(project_id, folderPath = "") {
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
 
-// ----- Agents -----
+// ----- Chronicle (flight-recorder project history) -----
+export async function listChronicle(project_id, session_id = null) {
+  const q = session_id ? `?session_id=${encodeURIComponent(session_id)}` : "";
+  return (await client.get(`/projects/${project_id}/chronicle${q}`)).data;
+}
+export async function listChronicleSessions(project_id) {
+  return (await client.get(`/projects/${project_id}/chronicle/sessions`)).data;
+}
+export async function addChronicleEntry(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/chronicle/entry`, payload)).data;
+}
+export async function verifyChronicle(project_id) {
+  return (await client.get(`/projects/${project_id}/chronicle/verify`)).data;
+}
+export async function exportChronicle(project_id, session_id = null) {
+  const q = session_id ? `?session_id=${encodeURIComponent(session_id)}` : "";
+  const r = await client.get(`/projects/${project_id}/chronicle/export${q}`,
+                              { responseType: "blob" });
+  const blobUrl = URL.createObjectURL(r.data);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `chronicle_${project_id}_${session_id || "full"}.md`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
 export async function listAgents() {
   return (await client.get("/agents")).data;
 }

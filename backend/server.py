@@ -45,10 +45,11 @@ from core.persistence import (
     associative_recall, associative_record, chronos_append, chronos_read,
     heuristic_get, heuristic_update, render_signature,
 )
-from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
+from core.persona import CHAT_PROMPT, CHRONICLE_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
 from core.pty_session import PtySession
 from core.scoring import audit_project
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
+from core import chronicle as chron
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -1055,13 +1056,174 @@ async def set_private_mode(payload: dict, user: dict = Depends(get_current_user)
     return {"ok": True, "enabled": enabled}
 
 
+# ---------- CHRONICLE (flight-recorder project history) ----------
+
+async def _require_project(user: dict, project_id: str) -> dict:
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return proj
+
+
+@api.get("/projects/{project_id}/chronicle")
+async def get_chronicle(
+    project_id: str,
+    session_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    await _require_project(user, project_id)
+    entries = await chron.list_entries(db, project_id=project_id, session_id=session_id)
+    return {"entries": entries, "scope": session_id or "all"}
+
+
+@api.get("/projects/{project_id}/chronicle/sessions")
+async def list_chronicle_sessions(
+    project_id: str, user: dict = Depends(get_current_user),
+):
+    await _require_project(user, project_id)
+    return {"sessions": await chron.list_sessions(db, project_id=project_id)}
+
+
+@api.post("/projects/{project_id}/chronicle/entry")
+async def append_chronicle_entry(
+    project_id: str, payload: dict, user: dict = Depends(get_current_user),
+):
+    """Manual entry written by the user (or J via the tool layer)."""
+    await _require_project(user, project_id)
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    body = payload.get("body") or ""
+    tags = payload.get("tags") or []
+    kind = payload.get("kind") or "user_note"
+    signer = payload.get("signer") or "USER"
+    session_id = payload.get("session_id") or f"manual_{uuid.uuid4().hex[:10]}"
+    if signer not in {"USER", "J"}:
+        raise HTTPException(status_code=400, detail="invalid signer")
+    if kind not in {"user_note", "milestone", "narrative"}:
+        raise HTTPException(status_code=400, detail="invalid kind")
+
+    entry = await chron.append_entry(
+        db, project_path(user["user_id"], project_id),
+        project_id=project_id, user_id=user["user_id"], session_id=session_id,
+        kind=kind, signer=signer, title=title, body=body,
+        tags=[str(t) for t in tags][:8],
+    )
+    entry.pop("_id", None)
+    return {"ok": True, "entry": entry}
+
+
+@api.get("/projects/{project_id}/chronicle/export")
+async def export_chronicle(
+    project_id: str,
+    session_id: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    """Download chronicle as .md — either full project or single session."""
+    await _require_project(user, project_id)
+    entries = await chron.list_entries(db, project_id=project_id, session_id=session_id)
+    md = chron.render_export(entries, project_id=project_id, session_id=session_id)
+    scope = session_id or "full"
+    filename = f"chronicle_{project_id}_{scope}.md"
+    return Response(
+        content=md, media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@api.get("/projects/{project_id}/chronicle/verify")
+async def verify_chronicle(
+    project_id: str, user: dict = Depends(get_current_user),
+):
+    """Walk the hash chain. Returns ok=true if every entry's hash recomputes cleanly."""
+    await _require_project(user, project_id)
+    return await chron.verify_chain(db, project_id=project_id)
+
+
+async def _chronicle_session_start(
+    project_id: str, user_id: str, session_id: str, first_message: str,
+) -> None:
+    """Idempotent: first chat message in a conversation = session_start entry."""
+    existing = await db.chronicle_entries.find_one(
+        {"project_id": project_id, "session_id": session_id, "kind": "session_start"},
+        {"_id": 1},
+    )
+    if existing:
+        return
+    body = first_message[:400].strip() if first_message else ""
+    proot = project_path(user_id, project_id)
+    try:
+        await chron.append_entry(
+            db, proot,
+            project_id=project_id, user_id=user_id, session_id=session_id,
+            kind="session_start", signer="SYSTEM",
+            title=f"Session opened · {session_id[-8:]}",
+            body=f"**User opened the rig and said:** {body}" if body else "",
+            tags=["session"],
+        )
+    except Exception as e:
+        log.warning(f"chronicle session_start failed: {e}")
+
+
+async def _chronicle_narrative(
+    user_id: str, project_id: str, session_id: str,
+    user_first_msg: str, tool_summary: list[str], final_summary: str,
+) -> Optional[str]:
+    """Call J to write a narrative paragraph; append it as a `narrative` entry."""
+    timeline = "\n".join(f"- {t}" for t in tool_summary[:30]) or "- (no tool activity)"
+    prompt_text = (
+        f"USER ASKED: {user_first_msg[:400]}\n\n"
+        f"TIMELINE OF MY WORK:\n{timeline}\n\n"
+        f"FINAL SUMMARY: {final_summary[:400] or '(none)'}\n\n"
+        "Write the chronicle entry now."
+    )
+    try:
+        reply, _meta = await _chain_call(
+            user_id=user_id, task="chat",
+            system=CHRONICLE_PROMPT, user_text=prompt_text,
+            session_id=f"chronicle-{session_id}", max_passes=1,
+        )
+    except Exception as e:
+        log.warning(f"chronicle narrative LLM call failed: {e}")
+        return None
+    text = (reply or "").strip()
+    tags: list[str] = []
+    if "\nTAGS:" in text:
+        body_part, _, tag_part = text.rpartition("\nTAGS:")
+        text = body_part.strip()
+        tags = [t.strip().lower() for t in tag_part.split(",") if t.strip()][:4]
+    proot = project_path(user_id, project_id)
+    entry = await chron.append_entry(
+        db, proot,
+        project_id=project_id, user_id=user_id, session_id=session_id,
+        kind="session_end", signer="J",
+        title="Session closed",
+        body=text,
+        tags=tags or ["session"],
+    )
+    return entry["entry_hash"]
+
+
 @api.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
     """Gemini-first chat with BYOK failover chain."""
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
+    project_id = payload.get("project_id")
     ctx = _build_context_block(payload)
     user_text = f"{ctx}\n\n[USER]\n{message}" if ctx else message
+
+    # First message of a project-scoped conversation → open a chronicle session.
+    if project_id:
+        proj = await db.projects.find_one(
+            {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 1},
+        )
+        if proj:
+            await _chronicle_session_start(
+                project_id, user["user_id"], conversation_id, message,
+            )
 
     await db.messages.insert_one({
         "conversation_id": conversation_id,
@@ -1752,6 +1914,9 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
         elif role == "tool":
             transcript_for_llm.append(f"[TOOL RESULT — {h.get('name')}]\n{h.get('content','')[:1500]}")
 
+    # Open chronicle session on first user message of this conversation
+    await _chronicle_session_start(project_id, user["user_id"], conversation_id, message)
+
     await db.messages.insert_one({
         "conversation_id": conversation_id, "user_id": user["user_id"],
         "role": "user", "content": message,
@@ -1872,6 +2037,28 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
         "done_reason": done_reason,
     })
 
+    # Close the chronicle session with a J-voiced narrative entry — but only
+    # when a real arc completed (avoid noisy entries for ask_user pauses).
+    if done_reason in {"done_tool", "no_tool_calls", "max_steps_reached"}:
+        tool_summary = []
+        for s in steps:
+            if s.get("type") == "tool":
+                tn = s.get("name", "?")
+                args = s.get("args", {}) or {}
+                path = args.get("path") or args.get("command") or ""
+                err = (s.get("result") or {}).get("error")
+                tag = "FAIL" if err else "OK"
+                tool_summary.append(f"{tag} · {tn}({str(path)[:80]})")
+        try:
+            await _chronicle_narrative(
+                user_id=user["user_id"], project_id=project_id,
+                session_id=conversation_id,
+                user_first_msg=message, tool_summary=tool_summary,
+                final_summary=final_summary,
+            )
+        except Exception as e:
+            log.warning(f"chronicle narrative append failed: {e}")
+
     return {
         "conversation_id": conversation_id,
         "steps": steps,
@@ -1936,6 +2123,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def _startup():
+    try:
+        await chron.ensure_indexes(db)
+    except Exception as e:
+        log.warning(f"chronicle indexes setup failed: {e}")
 
 
 @app.on_event("shutdown")
