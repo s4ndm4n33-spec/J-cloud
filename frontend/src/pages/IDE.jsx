@@ -13,6 +13,7 @@ import AICoworker from "@/components/AICoworker";
 import TerminalPane from "@/components/TerminalPane";
 import ProblemsPanel from "@/components/ProblemsPanel";
 import GitHubPanel from "@/components/GitHubPanel";
+import GlossaryPanel from "@/components/GlossaryPanel";
 import LivePreview from "@/components/LivePreview";
 import InlineEditModal from "@/components/InlineEditModal";
 import HardBlockModal from "@/components/HardBlockModal";
@@ -191,11 +192,11 @@ export default function IDE() {
           <>
             {isMobile && (
               <div className="flex border-b border-cyan/10">
-                {["files", "git", "gauntlet"].map((k) => (
+                {["files", "git", "gauntlet", "glossary"].map((k) => (
                   <button
                     key={k}
                     onClick={() => setLeftView(k)}
-                    className={`flex-1 py-2 font-display text-[0.65rem] tracking-[0.2em] ${
+                    className={`flex-1 py-2 font-display text-[0.6rem] tracking-[0.2em] ${
                       leftView === k ? "text-cyan border-b border-cyan" : "text-alloy"
                     }`}
                     data-testid={`mobile-left-${k}`}
@@ -238,6 +239,7 @@ export default function IDE() {
                 </div>
               </div>
             )}
+            {leftView === "glossary" && <GlossaryPanel />}
           </>
         );
 
@@ -370,7 +372,7 @@ export default function IDE() {
                 className="w-1 bg-cyan/10 hover:bg-cyan/40 transition-colors cursor-col-resize" />
               <Panel defaultSize="56" minSize="25" id="panel-center" className="min-w-0">
                 <div className="h-full flex flex-col">
-                  <div className="flex-1 min-h-0">
+                  <div className="flex-1 min-h-0 flex flex-col">
                     {editorBody}
                   </div>
                   <div

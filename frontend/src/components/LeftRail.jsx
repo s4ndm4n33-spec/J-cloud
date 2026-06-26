@@ -1,9 +1,10 @@
-import { Folder, GitBranch, ShieldCheck } from "@phosphor-icons/react";
+import { Folder, GitBranch, ShieldCheck, BookOpen } from "@phosphor-icons/react";
 
 const ITEMS = [
   { key: "files", label: "Files", Icon: Folder },
   { key: "git", label: "Git", Icon: GitBranch },
   { key: "gauntlet", label: "Gauntlet", Icon: ShieldCheck },
+  { key: "glossary", label: "Command Glossary", Icon: BookOpen },
 ];
 
 export default function LeftRail({ active, onChange }) {

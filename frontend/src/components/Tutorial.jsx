@@ -29,6 +29,11 @@ const STEPS = [
     body: "Full IntelliSense, multi-tab, syntax highlighting. Highlight code → press ⌘K (Ctrl+K on PC) to ask J for an inline refactor with Five-Masters AST review.",
   },
   {
+    selector: '[data-testid="rail-glossary"]',
+    title: "Command Glossary · on the left rail.",
+    body: "Forgot what `tar -xzf` does, or whether `pytest` lives in this container? Open the Glossary tab — every binary J has access to is listed with a one-line description, a copy-pasteable example, and category filters. Searchable. Run `<command> --help` in the terminal for full flag surfaces.",
+  },
+  {
     selector: '[data-testid="ai-coworker"]',
     title: "J · your AI coworker.",
     body: "Ask anything. J has full project context, can read & write files, run terminal commands, and audit your code. The chain telemetry strip at the bottom shows which model answered.",
