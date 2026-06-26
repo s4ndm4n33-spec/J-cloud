@@ -172,6 +172,18 @@ export default function IDE() {
         previewOpen={previewOpen}
         onTogglePreview={() => setPreviewOpen((v) => !v)}
         onOpenTutorial={() => setTutorialOpen(true)}
+        onProjectDeleted={(deletedId) => {
+          setProjects((prev) => {
+            const next = prev.filter((p) => p.project_id !== deletedId);
+            // If we just deleted the active project, switch to the first remaining one
+            if (activeProject?.project_id === deletedId) {
+              setActiveProject(next[0] || null);
+              setTabs([]);
+              setActiveTab(null);
+            }
+            return next;
+          });
+        }}
       />
 
       {(() => {

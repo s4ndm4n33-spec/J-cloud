@@ -380,6 +380,43 @@ async def delete_file(project_id: str, path: str, user: dict = Depends(get_curre
     return {"ok": True}
 
 
+@api.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
+    """Permanently delete a project: workspace directory + projects doc.
+
+    Chronicle entries are kept (audit trail). Messages are kept (user history).
+    """
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    base = project_path(user["user_id"], project_id)
+    if base.exists():
+        try:
+            shutil.rmtree(base)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"workspace delete failed: {e}") from e
+    await db.projects.delete_one(
+        {"project_id": project_id, "user_id": user["user_id"]},
+    )
+    # Append a final chronicle entry as a tombstone so the project's history
+    # remains discoverable even though its workspace is gone.
+    try:
+        await chron.append_entry(
+            db, base.parent,  # write under parent so the file isn't deleted with the project
+            project_id=project_id, user_id=user["user_id"],
+            session_id=f"deleted_{uuid.uuid4().hex[:8]}",
+            kind="milestone", signer="SYSTEM",
+            title=f"Project deleted · {proj.get('name', project_id)}",
+            body=f"User deleted the workspace at {base}. Chronicle preserved for audit.",
+            tags=["delete", "project"],
+        )
+    except Exception:
+        pass
+    return {"ok": True, "deleted": project_id}
+
+
 # ---------- FIVE MASTERS GAUNTLET ----------
 
 @api.post("/gauntlet/evaluate")

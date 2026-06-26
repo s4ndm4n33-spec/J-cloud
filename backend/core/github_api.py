@@ -94,33 +94,78 @@ async def open_pr(token: str, full_name: str, head: str, base: str,
 
 # ---------- git CLI helpers (workspaces are already git-initialized) ----------
 
+import shutil as _shutil
+
+
+def _git_binary_available() -> bool:
+    return _shutil.which("git") is not None
+
 
 def _run(args: list[str], cwd: Path, timeout: int = 60) -> tuple[int, str, str]:
+    if args and args[0] == "git" and not _git_binary_available():
+        return 127, "", (
+            "git binary not found in this environment. "
+            "Clone is using the pure-Python dulwich fallback; "
+            "other git ops (status/log/push) require the git CLI — "
+            "ask the platform to install `git` in the production container."
+        )
     try:
         r = subprocess.run(
             args, cwd=cwd, capture_output=True, text=True, timeout=timeout,
         )
         return r.returncode, r.stdout, r.stderr
+    except FileNotFoundError as e:
+        return 127, "", f"binary not found: {e}"
     except (subprocess.SubprocessError, OSError) as e:
         return 1, "", str(e)
 
 
 def _https_with_token(clone_url: str, token: str) -> str:
-    """Inject token into the https URL: https://x-access-token:<token>@github.com/...
+    """Inject token into the https URL for authenticated clone/push.
+    Returns the URL unchanged when token is empty (anonymous public clone).
     """
+    if not token:
+        return clone_url
     if clone_url.startswith("https://"):
         return clone_url.replace("https://", f"https://x-access-token:{token}@", 1)
     return clone_url
 
 
-def git_clone(token: str, clone_url: str, dest: Path) -> tuple[int, str, str]:
-    url = _https_with_token(clone_url, token)
+def _clone_via_dulwich(clone_url: str, token: str, dest: Path) -> tuple[int, str, str]:
+    """Pure-Python clone — works without the git binary."""
+    try:
+        from dulwich import porcelain
+    except ImportError as e:
+        return 1, "", f"dulwich not available: {e}"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    code, out, err = _run(["git", "clone", "--depth", "50", url, str(dest)], dest.parent, timeout=180)
-    # Rewrite origin to non-token URL so it isn't persisted on disk
-    if code == 0:
-        _run(["git", "remote", "set-url", "origin", clone_url], dest)
-    return code, out, err
+    url = _https_with_token(clone_url, token)
+    try:
+        porcelain.clone(url, str(dest), depth=50)
+    except Exception as e:  # noqa: BLE001 — dulwich raises a variety of errors
+        return 1, "", f"dulwich clone failed: {e}"
+    # Strip token from the persisted remote
+    try:
+        porcelain.remote_set_url(str(dest), "origin", clone_url)
+    except Exception:
+        pass
+    return 0, f"cloned via dulwich into {dest.name}", ""
+
+
+def git_clone(token: str, clone_url: str, dest: Path) -> tuple[int, str, str]:
+    # Prefer the git binary (faster, full features). Fall back to dulwich when
+    # the binary is missing (typical in slim production containers).
+    if _git_binary_available():
+        url = _https_with_token(clone_url, token)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        code, out, err = _run(
+            ["git", "clone", "--depth", "50", url, str(dest)],
+            dest.parent, timeout=180,
+        )
+        if code == 0:
+            _run(["git", "remote", "set-url", "origin", clone_url], dest)
+        return code, out, err
+    # Production fallback
+    return _clone_via_dulwich(clone_url, token, dest)
 
 
 def git_set_remote(repo_path: Path, clone_url: str) -> tuple[int, str, str]:

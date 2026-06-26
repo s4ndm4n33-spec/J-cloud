@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen } from "@phosphor-icons/react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash } from "@phosphor-icons/react";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
-import { getPrivateMode, setPrivateMode } from "@/lib/api";
+import { getPrivateMode, setPrivateMode, deleteProject } from "@/lib/api";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
@@ -10,6 +10,7 @@ const LOGO_URL =
 export default function TopBar({
   user, projects, activeProject, onProjectChange, onNewProject,
   gauntletStatus, previewOpen, onTogglePreview, onOpenTutorial,
+  onProjectDeleted,
 }) {
   const { signOut } = useAuth();
   const [creating, setCreating] = useState(false);
@@ -99,14 +100,38 @@ export default function TopBar({
             />
           </form>
         ) : (
-          <button
-            data-testid="new-project-button"
-            title="New project"
-            onClick={() => setCreating(true)}
-            className="text-alloy hover:text-cyan transition-colors"
-          >
-            <Plus size={16} weight="bold" />
-          </button>
+          <>
+            <button
+              data-testid="new-project-button"
+              title="New project"
+              onClick={() => setCreating(true)}
+              className="text-alloy hover:text-cyan transition-colors"
+            >
+              <Plus size={16} weight="bold" />
+            </button>
+            {activeProject && onProjectDeleted && (
+              <button
+                data-testid="delete-project-button"
+                title={`Delete project "${activeProject.name}" (workspace files; chronicle is preserved)`}
+                onClick={async () => {
+                  const name = activeProject.name || activeProject.project_id;
+                  const confirm = window.prompt(
+                    `Type the project name to permanently delete:\n\n${name}\n\nThis removes the workspace files. Chat history and chronicle entries are kept for audit.`
+                  );
+                  if (confirm !== name) return;
+                  try {
+                    await deleteProject(activeProject.project_id);
+                    onProjectDeleted(activeProject.project_id);
+                  } catch (e) {
+                    window.alert(`Delete failed: ${e?.response?.data?.detail || e.message}`);
+                  }
+                }}
+                className="text-alloy hover:text-orange transition-colors"
+              >
+                <Trash size={14} weight="bold" />
+              </button>
+            )}
+          </>
         )}
       </div>
 

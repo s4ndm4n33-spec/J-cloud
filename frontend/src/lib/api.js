@@ -61,6 +61,9 @@ export async function writeFile(project_id, path, content) {
 export async function deleteFile(project_id, path) {
   return (await client.delete(`/projects/${project_id}/file`, { params: { path } })).data;
 }
+export async function deleteProject(project_id) {
+  return (await client.delete(`/projects/${project_id}`)).data;
+}
 
 export async function evaluateGauntlet(code, language) {
   return (await client.post("/gauntlet/evaluate", { code, language })).data;
