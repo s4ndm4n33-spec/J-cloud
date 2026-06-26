@@ -25,6 +25,14 @@ function truncateTree(tree, depth = 0, lines = []) {
 export default function AICoworker({ project, activeTab, tree, onScoreUpdate, onApplyRefined, onAICall }) {
   const [tab, setTab] = useState("chat");
 
+  // Chat state lifted from ChatTab so tab switches don't wipe the conversation.
+  // Only `END SESSION` (in ChatTab) clears it.
+  const [chatMessages, setChatMessages] = useState([
+    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
+  ]);
+  const [chatConversationId, setChatConversationId] = useState(null);
+  const [chatAgentMode, setChatAgentMode] = useState(true);
+
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">
       <div className="flex items-stretch border-b border-cyan/10 bg-midnight overflow-x-auto scrollbar-thin">
@@ -50,7 +58,22 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
       </div>
 
       <div className="flex-1 min-h-0">
-        {tab === "chat" && <ChatTab project={project} activeTab={activeTab} tree={tree} onAICall={onAICall} />}
+        {/* Chat tab is always rendered but hidden when not active — keeps the
+            DOM (scroll position, textarea focus) AND state alive across tab switches. */}
+        <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <ChatTab
+            project={project}
+            activeTab={activeTab}
+            tree={tree}
+            onAICall={onAICall}
+            messages={chatMessages}
+            setMessages={setChatMessages}
+            conversationId={chatConversationId}
+            setConversationId={setChatConversationId}
+            agentMode={chatAgentMode}
+            setAgentMode={setChatAgentMode}
+          />
+        </div>
         {tab === "refine" && (
           <RefineTab
             activeTab={activeTab}
@@ -70,19 +93,53 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
   );
 }
 
-function ChatTab({ project, activeTab, tree, onAICall }) {
-  const [messages, setMessages] = useState([
-    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
-  ]);
+function ChatTab({
+  project, activeTab, tree, onAICall,
+  messages, setMessages,
+  conversationId, setConversationId,
+  agentMode, setAgentMode,
+}) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [conversationId, setConversationId] = useState(null);
-  const [agentMode, setAgentMode] = useState(true);
+  const [ending, setEnding] = useState(false);
   const scrollRef = useRef(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  const hasUserActivity = messages.some((m) => m.role === "user");
+
+  async function endSession() {
+    if (ending || !hasUserActivity) return;
+    if (!project) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
+      return;
+    }
+    if (!conversationId) {
+      // No conversation has been opened yet (no messages sent) — just clear.
+      setMessages([{ role: "system", content: "J is online. Five Masters loaded. What needs building?" }]);
+      return;
+    }
+    setEnding(true);
+    try {
+      const { closeChatSession } = await import("@/lib/api");
+      const r = await closeChatSession(project.project_id, conversationId);
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", content: `// SESSION CLOSED · chronicle entry written${r.email_sent ? " · transcript emailed" : ""}.` },
+        r.narrative ? { role: "assistant", content: r.narrative, meta: { source: "chronicle" } } : null,
+        { role: "system", content: "// new session starts on your next message." },
+      ].filter(Boolean));
+      setConversationId(null);
+      onAICall?.();
+    } catch (e) {
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        content: `// failed to close session: ${e?.response?.data?.detail || e.message}`,
+      }]);
+    } finally { setEnding(false); }
+  }
 
   async function send() {
     if (!input.trim() || busy) return;
@@ -145,6 +202,17 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
             {agentMode ? "// J can mutate files" : "// chat only"}
           </span>
         </label>
+        <button
+          data-testid="end-session-button"
+          onClick={endSession}
+          disabled={ending || busy || !hasUserActivity}
+          title={hasUserActivity
+            ? "Close this conversation — J writes a chronicle narrative + (if opted in) emails you the transcript."
+            : "Send at least one message before closing a session."}
+          className="ml-auto font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {ending ? "CLOSING…" : "END SESSION"}
+        </button>
       </div>
       <div className="p-2 flex gap-2">
         <textarea

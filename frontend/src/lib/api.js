@@ -240,6 +240,19 @@ export async function exportChronicle(project_id, session_id = null) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 }
+
+export async function closeChatSession(project_id, conversation_id) {
+  return (await client.post(`/projects/${project_id}/chronicle/close-session`,
+                            { conversation_id })).data;
+}
+
+// ----- Email preferences (opt-in transcripts) -----
+export async function getEmailPrefs() {
+  return (await client.get("/me/email-prefs")).data;
+}
+export async function setEmailPrefs(enabled, address) {
+  return (await client.post("/me/email-prefs", { enabled, address })).data;
+}
 export async function listAgents() {
   return (await client.get("/agents")).data;
 }

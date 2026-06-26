@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { X, Key, Trash, CheckCircle, CircleNotch, Stack, Plug, Cpu } from "@phosphor-icons/react";
+import { X, Key, Trash, CheckCircle, CircleNotch, Stack, Plug, Cpu, Envelope } from "@phosphor-icons/react";
 import axios from "axios";
+import { getEmailPrefs, setEmailPrefs } from "@/lib/api";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 const PROVIDER_META = {
@@ -21,16 +22,19 @@ export default function SettingsModal({ onClose }) {
   const [ollamaTest, setOllamaTest] = useState(null); // {ok, models[], backend, error}
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState(null);
+  const [email, setEmail] = useState({ enabled: false, address: "", resend_configured: false });
 
   async function refresh() {
-    const [keysResp, chainResp] = await Promise.all([
+    const [keysResp, chainResp, emailResp] = await Promise.all([
       axios.get(`${API}/settings/keys`, { withCredentials: true }),
       axios.get(`${API}/ai/chain`, { withCredentials: true }),
+      getEmailPrefs().catch(() => ({ enabled: false, address: "", resend_configured: false })),
     ]);
     setProviders(keysResp.data.providers);
     setUniversalKey(keysResp.data.universal_key_available);
     setPresets(keysResp.data.ollama_presets || {});
     setChains(chainResp.data.chains);
+    setEmail(emailResp);
     const ol = keysResp.data.providers.find((p) => p.provider === "ollama");
     if (ol && ol.configured) {
       setOllamaDraft({ base_url: ol.base_url || "", default_model: ol.default_model || "" });
@@ -309,6 +313,70 @@ export default function SettingsModal({ onClose }) {
               <span className="text-cyan">{`ollama pull llama3.1`}</span>
               {`. Endpoint defaults to localhost:11434. Remote? set the host here and ensure the port is reachable from this workspace.`}
             </div>
+          </div>
+
+          <div className="border border-cyan/15 p-3" data-testid="email-prefs">
+            <div className="flex items-center gap-2 mb-2">
+              <Envelope size={14} className="text-cyan" weight="fill" />
+              <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">
+                EMAIL TRANSCRIPTS
+              </div>
+              <span className="font-mono text-[0.6rem] text-alloy ml-auto">
+                {email.resend_configured ? "// Resend: configured" : "// Resend: not configured"}
+              </span>
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer select-none mb-2">
+              <input
+                type="checkbox"
+                checked={email.enabled}
+                onChange={(e) => setEmail((p) => ({ ...p, enabled: e.target.checked }))}
+                className="mt-0.5 accent-cyan-500"
+                data-testid="email-enabled-checkbox"
+              />
+              <div>
+                <div className="font-mono text-[0.7rem] text-gridwhite">
+                  Email me the transcript when I end a session.
+                </div>
+                <div className="font-mono text-[0.6rem] text-alloy">
+                  Opt-in. Off by default. Includes the J-voiced narrative + full Q&amp;A history.
+                </div>
+              </div>
+            </label>
+            <input
+              type="email"
+              placeholder="your@email.com"
+              value={email.address}
+              onChange={(e) => setEmail((p) => ({ ...p, address: e.target.value }))}
+              disabled={!email.enabled}
+              className="w-full bg-steel border border-cyan/20 px-2 py-1.5 font-mono text-xs text-gridwhite disabled:opacity-40"
+              data-testid="email-address-input"
+            />
+            <div className="flex justify-end mt-2">
+              <button
+                onClick={async () => {
+                  setBusy("email");
+                  try {
+                    const r = await setEmailPrefs(email.enabled, email.address.trim());
+                    setEmail((p) => ({ ...p, ...r }));
+                    flash("Email preferences saved");
+                  } catch (e) {
+                    flash(e?.response?.data?.detail || "Save failed");
+                  } finally { setBusy(null); }
+                }}
+                disabled={busy === "email"}
+                className="btn-solid text-[0.7rem]"
+                data-testid="email-save"
+              >
+                {busy === "email" ? <CircleNotch size={11} className="animate-spin" /> : null}
+                SAVE
+              </button>
+            </div>
+            {!email.resend_configured && (
+              <div className="mt-2 font-mono text-[0.6rem] text-orange border-l-2 border-orange/40 pl-2">
+                Heads-up: backend has no RESEND_API_KEY set yet, so emails won&apos;t actually
+                send. Saving the preference is fine — it kicks in the moment the key is added.
+              </div>
+            )}
           </div>
 
           <div className="border border-cyan/15 p-3" data-testid="chain-resolved">
