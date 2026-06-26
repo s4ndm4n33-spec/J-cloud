@@ -225,7 +225,7 @@ async def test_ws_j_help(project_id):
 
 def test_http_exec_timeout_is_300(tmp_path=None):
     """Verify source: 300s timeout, error message updated."""
-    src = Path("/app/backend/server.py").read_text(encoding="utf-8")
+    src = Path("/app/backend/routes/terminal.py").read_text(encoding="utf-8")
     assert "timeout=300" in src, "300s timeout not present in /api/terminal/exec"
     assert "Timeout (300s)" in src, "updated timeout error message missing"
     # 30s artifact should be gone from exec

@@ -59,6 +59,7 @@
 See `/app/memory/test_credentials.md`.
 
 ## Recently implemented (latest first)
+- **Backend refactor (2026-06-26)**: split monolithic `server.py` (2,314 lines) into focused modules — `server.py` now 77 lines (app shell only). Shared helpers in `deps.py` (db client, auth, project paths, override), `llm_chain.py` (TASK_CHAINS, BYOK resolver, Ollama caller, chain orchestrator with private-mode filter + telemetry), `chronicle_helpers.py` (session_start + narrative writer). Route modules per concern under `/app/backend/routes/`: `auth.py` (93), `projects.py` (141), `gauntlet.py` (62), `terminal.py` (173, includes WS PTY), `git_local.py` (63), `settings.py` (175), `chronicle.py` (190), `ai.py` (443 — chat/refine/governance/agent/telemetry/chain), `github.py` (211), `audit.py` (93), `uploads.py` (190), `agents.py` (55). 90/90 backend pytest pass post-refactor. API surface unchanged. Frontend smoke test confirms sign-in renders.
 - **Chat persistence + END SESSION + email transcripts (2026-06-26)**:
   - Chat state lifted from `ChatTab` into `AICoworker` parent. The chat sub-tree stays mounted (hidden via CSS `hidden` class) when other AI tabs are active, so the conversation, scroll position, and textarea content survive tab switches. ONLY explicit END SESSION clears it.
   - New **END SESSION** button (right side of chat toolbar, disabled until at least one user message). Click triggers `POST /projects/{id}/chronicle/close-session` which: pulls messages from `db.messages`, calls `_chronicle_narrative` to write a J-voiced `session_end` chronicle entry, and (if opted in) emails the transcript.
@@ -95,7 +96,7 @@ See `/app/memory/test_credentials.md`.
 - Terminal: PTY-backed streaming session via WebSocket (currently request-response).
 - Live Preview: dev-server proxy for SPA projects.
 - Five Masters language pack: native AST analyzers for JS/TS/Rust/Go.
-- Refactor: split `server.py` (1766 lines) into `/app/backend/routes/{auth,keys,ai,projects,github,tutorial,audit}.py`.
+- ~~Refactor: split `server.py` into `/app/backend/routes/*`.~~ ✅ Done 2026-06-26.
 
 ## Next Action Items
 1. Push fixes live: hit **Deploy** to roll the mobile-OAuth fix + Ollama support + Tutorial out to blue-j-gauntlet.com.
