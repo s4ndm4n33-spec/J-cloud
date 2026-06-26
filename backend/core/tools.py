@@ -134,28 +134,61 @@ def _safe(base: Path, rel: str) -> Path:
     return candidate
 
 
+from . import code_integrity
+
+
+async def _gated_write(ctx: ToolContext, target, path: str, content: str,
+                       mode: str = "w") -> dict:
+    """Atomic write that runs `code_integrity.validate` first.
+    `mode='w'` = overwrite, `mode='a'` = append (validation runs on the
+    POST-append final content so chunked writes still produce a valid file).
+    """
+    if mode == "a" and target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            existing = ""
+        final = existing + content
+    else:
+        final = content
+
+    result = code_integrity.validate(path, final)
+    if not result.ok:
+        return {
+            **result.as_tool_error(),
+            "path": path,
+            "mode": mode,
+            "rejected": True,
+            "bytes_attempted": len(content),
+        }
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write via temp + rename (so a crash leaves the OLD file intact)
+    import os, uuid
+    tmp = target.with_suffix(target.suffix + f".gate.{uuid.uuid4().hex[:6]}")
+    tmp.write_text(final, encoding="utf-8")
+    os.replace(tmp, target)
+    return {
+        "ok": True, "path": path, "bytes": len(final),
+        "validated": True, "language": result.language,
+    }
+
+
 async def _tool_create_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
     if target.exists():
         return {"error": "File already exists. Use write_file to overwrite."}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return {"ok": True, "path": path, "bytes": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="w")
 
 
 async def _tool_write_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return {"ok": True, "path": path, "bytes": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="w")
 
 
 async def _tool_append_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a") as f:
-        f.write(content)
-    return {"ok": True, "path": path, "bytes_appended": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="a")
 
 
 async def _tool_read_file(ctx: ToolContext, path: str) -> dict:
