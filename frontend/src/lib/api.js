@@ -235,6 +235,16 @@ export async function listChronicleSessions(project_id) {
 export async function addChronicleEntry(project_id, payload) {
   return (await client.post(`/projects/${project_id}/chronicle/entry`, payload)).data;
 }
+export async function acceptChronicleProposal(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/chronicle/accept-proposal`, payload)).data;
+}
+export async function skipChronicleProposal(project_id, entry_hash) {
+  return (await client.post(`/projects/${project_id}/chronicle/skip-proposal`, { entry_hash })).data;
+}
+export async function readChronicleSnapshot(project_id, path) {
+  return (await client.get(`/projects/${project_id}/chronicle/snapshot`,
+                            { params: { path } })).data;
+}
 export async function verifyChronicle(project_id) {
   return (await client.get(`/projects/${project_id}/chronicle/verify`)).data;
 }

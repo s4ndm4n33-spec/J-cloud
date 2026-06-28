@@ -78,6 +78,12 @@ TOOL_SPEC: list[dict[str, Any]] = [
     # Control
     {"name": "ask_user", "desc": "Pause and ask the user a question. Use BEFORE bulk mutations (>5 files) or any irreversible action.",
      "args": {"question": "string"}},
+    {"name": "propose_chronicle_entry", "desc": "Suggest a chronicle entry the user can ACCEPT / EDIT / SKIP. Use for architectural decisions, bug-and-fix lessons, benchmarks, 'don't do X again' notes. NOT for ordinary tool calls (those auto-mirror).",
+     "args": {"title": "string (max 120 chars)", "body": "string (markdown, max 4000)",
+              "tags": "list of strings (max 6, lowercased)",
+              "suggested_kind": "'milestone' | 'narrative' | 'user_note' (default milestone)"}},
+    {"name": "screenshot_preview", "desc": "Snapshot the current HTML contents of a file into the chronicle for design-review trails. Captures source AS IS for replay. Use on any .html / .htm file after a meaningful UI change.",
+     "args": {"html_path": "string (relative path to a .html file)", "note": "optional string explaining what changed (max 400)"}},
     {"name": "done", "desc": "Signal that the task is complete. The 'summary' goes to the user.",
      "args": {"summary": "string"}},
 ]
@@ -552,6 +558,84 @@ async def _tool_ask_user(ctx: ToolContext, question: str) -> dict:
     return {"_ask_user": True, "question": question}
 
 
+async def _tool_propose_chronicle_entry(
+    ctx: ToolContext,
+    title: str,
+    body: str = "",
+    tags: list | None = None,
+    suggested_kind: str = "milestone",
+) -> dict:
+    """J proposes a chronicle entry mid-session.
+
+    The entry is written immediately as kind="proposed" / signer="J" so it's
+    auditable, but the Chronicle UI flags it as pending. The user can ACCEPT
+    (promote to suggested_kind), EDIT (open the manual entry form pre-filled),
+    or SKIP (delete the proposal).
+
+    Use this when you've just done something a future-you should remember
+    (architectural choice, a bug-and-fix lesson, a benchmark, a 'don't do X again').
+    Don't use it for ordinary tool calls — those auto-mirror as kind="tool".
+    """
+    title = (title or "").strip()
+    if not title:
+        return {"error": "title required"}
+    if suggested_kind not in {"milestone", "narrative", "user_note"}:
+        suggested_kind = "milestone"
+    return {
+        "ok": True,
+        "_propose_chronicle": {
+            "title": title[:120],
+            "body": (body or "")[:4000],
+            "tags": [str(t).lower()[:24] for t in (tags or [])][:6],
+            "suggested_kind": suggested_kind,
+        },
+    }
+
+
+async def _tool_screenshot_preview(
+    ctx: ToolContext,
+    html_path: str,
+    note: str = "",
+) -> dict:
+    """Snapshot the current contents of an HTML file into the chronicle for
+    design-review trails.
+
+    Captures the HTML source AS IT IS RIGHT NOW (so future-you can re-render
+    exactly what the page looked like at this moment), saves it to
+    `.gauntlet/snapshots/<ts>_<sanitized>.html`, and signals the agent loop to
+    write a chronicle milestone entry tagged `design-snapshot` referencing it.
+    """
+    target = _safe(ctx.base, html_path)
+    if not target.exists() or not target.is_file():
+        return {"error": f"HTML file not found: {html_path}"}
+    if not re.search(r"\.html?$", target.name, re.IGNORECASE):
+        return {"error": f"Not an HTML file: {html_path}"}
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {"error": f"File is not UTF-8 readable: {html_path}"}
+
+    import time as _time
+    ts = _time.strftime("%Y%m%d-%H%M%S", _time.gmtime())
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", target.stem)[:40] or "snapshot"
+    snap_rel = f".gauntlet/snapshots/{ts}_{sanitized}.html"
+    snap_target = ctx.base / snap_rel
+    snap_target.parent.mkdir(parents=True, exist_ok=True)
+    snap_target.write_text(content, encoding="utf-8")
+
+    return {
+        "ok": True,
+        "html_path": html_path,
+        "snapshot_path": snap_rel,
+        "bytes": len(content),
+        "_snapshot_preview": {
+            "html_path": html_path,
+            "snapshot_path": snap_rel,
+            "note": (note or "")[:400],
+        },
+    }
+
+
 async def _tool_done(ctx: ToolContext, summary: str = "") -> dict:
     return {"_done": True, "summary": summary}
 
@@ -582,6 +666,8 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "project_audit": _tool_project_audit,
     "web_fetch": _tool_web_fetch,
     "ask_user": _tool_ask_user,
+    "propose_chronicle_entry": _tool_propose_chronicle_entry,
+    "screenshot_preview": _tool_screenshot_preview,
     "done": _tool_done,
 }
 

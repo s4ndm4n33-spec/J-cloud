@@ -32,6 +32,18 @@ function basenameOf(path) {
   return i < 0 ? path : path.slice(i + 1);
 }
 
+function treeNodeIsDir(tree, path) {
+  // Walk the tree to determine if path refers to a directory
+  for (const n of tree) {
+    if (n.path === path) return n.type === "dir";
+    if (n.type === "dir" && n.children && path.startsWith(n.path + "/")) {
+      const r = treeNodeIsDir(n.children, path);
+      if (r !== null) return r;
+    }
+  }
+  return null;
+}
+
 export default function FileTree({ tree, onOpen, onRefresh, activePath, projectId, onRenamed, onPreviewHtml }) {
   const [openMap, setOpenMap] = useState({});
   const fileInputRef = useRef(null);
@@ -88,9 +100,17 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     await ingestFiles(files);
   }
 
-  function onDragOver(e) { e.preventDefault(); setDragOver(true); }
+  function onDragOver(e) {
+    // External file upload — only highlight if a real OS file is being dragged
+    // (don't fire for intra-tree moves which use our custom MIME type)
+    if (e.dataTransfer.types?.includes("application/x-gauntlet-tree-path")) return;
+    e.preventDefault();
+    setDragOver(true);
+  }
   function onDragLeave() { setDragOver(false); }
   async function onDrop(e) {
+    // Skip the OS-upload path if this is an intra-tree move
+    if (e.dataTransfer.types?.includes("application/x-gauntlet-tree-path")) return;
     e.preventDefault();
     setDragOver(false);
     const items = e.dataTransfer.items;
@@ -108,6 +128,61 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     }
     await ingestFiles(collected, paths);
   }
+
+  // ---------- Intra-tree drag-and-drop (move files/folders into a folder) ----------
+  // dropTarget = path of the folder currently being hovered with a tree-drag
+  const [dropTarget, setDropTarget] = useState(null);
+
+  function onRowDragStart(e, row) {
+    e.stopPropagation();
+    // dataTransfer.setData with our custom MIME so the outer container ignores it
+    e.dataTransfer.setData("application/x-gauntlet-tree-path", row.path);
+    e.dataTransfer.setData("text/plain", row.path);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  function onFolderDragOver(e, folderPath) {
+    // Only react to intra-tree drags
+    if (!e.dataTransfer.types?.includes("application/x-gauntlet-tree-path")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    if (dropTarget !== folderPath) setDropTarget(folderPath);
+  }
+
+  function onFolderDragLeave(e, folderPath) {
+    if (dropTarget === folderPath) setDropTarget(null);
+  }
+
+  async function onFolderDrop(e, folderPath) {
+    if (!e.dataTransfer.types?.includes("application/x-gauntlet-tree-path")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(null);
+    const src = e.dataTransfer.getData("application/x-gauntlet-tree-path");
+    if (!src || !projectId) return;
+    // Disallow no-op moves and moving a folder into itself/its descendants
+    const dstParent = folderPath;
+    if (src === dstParent) return;
+    if (dstParent.startsWith(src + "/")) {
+      window.alert("Can't move a folder into itself.");
+      return;
+    }
+    if (dirnameOf(src) === dstParent) return; // already there
+    const base = basenameOf(src);
+    const newPath = dstParent ? `${dstParent}/${base}` : base;
+    const isDir = !!tree && treeNodeIsDir(tree, src);
+    try {
+      await renameFile(projectId, src, newPath);
+      onRenamed?.(src, newPath, isDir);
+      // Auto-expand the destination folder so the user sees where their file landed
+      setOpenMap((p) => ({ ...p, [dstParent]: true }));
+      onRefresh?.();
+    } catch (err) {
+      window.alert(err?.response?.data?.detail || "Move failed");
+    }
+  }
+  // ---------------------------------------------------------------------------------
 
   function handleDownload(path) {
     window.open(downloadUrl(projectId, path), "_blank");
@@ -341,12 +416,20 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
           const isRenaming = renaming?.path === row.path;
 
           if (row.type === "dir") {
+            const isDrop = dropTarget === row.path;
             return (
               <div
                 key={`d:${row.path}`}
-                className="group flex items-center hover:bg-cyan/5"
+                className={`group flex items-center hover:bg-cyan/5 ${
+                  isDrop ? "bg-cyan/15 outline outline-1 outline-cyan" : ""
+                }`}
                 style={{ paddingLeft: 6 + row.depth * 12 }}
                 onContextMenu={(e) => onRowContextMenu(e, row)}
+                draggable={!isRenaming}
+                onDragStart={(e) => onRowDragStart(e, row)}
+                onDragOver={(e) => onFolderDragOver(e, row.path)}
+                onDragLeave={(e) => onFolderDragLeave(e, row.path)}
+                onDrop={(e) => onFolderDrop(e, row.path)}
               >
                 {isRenaming ? (
                   <div className="flex-1 flex items-center gap-1 py-1 text-[0.78rem] text-cyan">
@@ -399,6 +482,8 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
               className={`group flex items-center hover:bg-cyan/5 ${isActive ? "bg-cyan/10" : ""}`}
               style={{ paddingLeft: 6 + row.depth * 12 + 12 }}
               onContextMenu={(e) => onRowContextMenu(e, row)}
+              draggable={!isRenaming}
+              onDragStart={(e) => onRowDragStart(e, row)}
             >
               {isRenaming ? (
                 <div className="flex-1 flex items-center gap-2 py-1 text-[0.78rem] text-cyan">
@@ -453,6 +538,18 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
         })}
         {!rows.length && (
           <div className="px-3 py-4 text-alloy font-mono text-xs">// empty — right-click or drop files here</div>
+        )}
+        {rows.length > 0 && (
+          // Implicit drop-to-root target. Hidden until a tree-drag is in flight.
+          <div
+            data-testid="tree-root-drop"
+            className={`mt-2 mx-2 px-3 py-2 border border-dashed font-mono text-[0.65rem] transition-opacity ${
+              dropTarget === "" ? "opacity-100 border-cyan text-cyan bg-cyan/5" : "opacity-30 border-cyan/20 text-alloy"
+            }`}
+            onDragOver={(e) => onFolderDragOver(e, "")}
+            onDragLeave={(e) => onFolderDragLeave(e, "")}
+            onDrop={(e) => onFolderDrop(e, "")}
+          >// drop here to move to project root</div>
         )}
       </div>
 

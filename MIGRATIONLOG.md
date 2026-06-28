@@ -18,6 +18,68 @@
 
 ---
 
+## 2026-06-28 03:55 UTC · Tree drag-and-drop + J `screenshot_preview` + `propose_chronicle_entry` — signed: J (Claude Sonnet 4.5 via Universal Key)
+
+### What broke (or was missing)
+Three operator-experience gaps that, together, made the IDE feel half-finished:
+1. **No drag-and-drop in the file tree.** Right-click → Rename worked but moving a file across folders meant typing the full new path. Standard IDE muscle memory was unmet.
+2. **No way for J to suggest chronicle entries mid-session.** J could either silently note things or hijack the user with an `ask_user` interruption. The clean middle ground — propose and let the user accept/edit/skip — didn't exist.
+3. **No design-review trail for HTML changes.** A user iterating on `pages/about.html` had no way to ask J "remember what this looked like before I touched it" beyond manual screenshots.
+
+### How we fixed it
+- **Tree DnD** (`frontend/src/components/FileTree.jsx` + IDE.jsx wiring):
+  - Rows get `draggable={!isRenaming}` + `onDragStart` that stamps a custom MIME `application/x-gauntlet-tree-path` (so the existing OS-file-upload drop handler can tell intra-tree drags apart and ignore them).
+  - Folder rows get `onDragOver` / `onDragLeave` / `onDrop`. The hovered folder gets a cyan outline + tint while a drag is in flight.
+  - Disallow moving a folder INTO itself or its own descendant (`dstParent.startsWith(src + "/")` check).
+  - New `dropTarget=""` zone at the tree bottom for moving things to the project root.
+  - Calls existing `POST /api/projects/{id}/file/rename` — no new backend work needed.
+  - Auto-expands the destination folder so the user sees where their file landed.
+- **`propose_chronicle_entry` tool** (`backend/core/tools.py`):
+  - Tool args: `title, body, tags, suggested_kind`. Returns a marker `_propose_chronicle` in the result; the agent loop in `routes/ai.py` writes the actual chronicle entry as `kind="proposed", signer="J"` with the suggested kind stored in tags as `suggested-kind:milestone|narrative|user_note`.
+  - New endpoints `POST /chronicle/accept-proposal` and `POST /chronicle/skip-proposal`. Accept writes a fresh USER-signed entry with the suggested kind (or user-overridden via payload); the original proposal is updated with `proposal_status="accepted"` and `accepted_entry_hash` linking the two. **The original is never deleted** — audit trail intact.
+  - ChroniclePanel `EntryCard` extended: when `kind=="proposed"` and no `proposal_status`, renders ACCEPT / EDIT / SKIP buttons + an inline title/body editor for the edit path. Accepted/skipped proposals retain a visible badge ("// ACCEPTED" or "// SKIPPED") for replay.
+- **`screenshot_preview` tool** (`backend/core/tools.py`):
+  - Tool args: `html_path, note`. Reads the file, writes a snapshot copy to `.gauntlet/snapshots/<ts>_<sanitized>.html`, returns the snapshot path + a `_snapshot_preview` marker.
+  - Agent loop writes a chronicle milestone entry with body referencing the snapshot path and tags `["design-snapshot", "src:<path>", "file:<snapshot-path>"]`.
+  - New endpoint `GET /chronicle/snapshot?path=...` reads back the saved HTML for inline iframe rendering. Restricted to `.gauntlet/snapshots/` prefix only.
+  - ChroniclePanel `EntryCard` detects the `file:.gauntlet/snapshots/...` tag and renders a **VIEW SNAPSHOT** button that expands a sandboxed `<iframe srcDoc>` showing exactly what the HTML rendered as at capture time.
+
+### Why we fixed it that way
+- **Custom MIME for intra-tree DnD, not a global state flag.** A `useState` "is-dragging-a-tree-item" flag would race against quick second drags AND wouldn't survive iframes/portals. `dataTransfer.types` is the browser's source of truth — read it from event handlers and short-circuit cleanly. The OS-file-upload drop handler now does `if (e.dataTransfer.types?.includes("application/x-gauntlet-tree-path")) return;` — no flag needed.
+- **Tool returns markers; agent loop writes chronicles.** I considered giving the tool layer direct DB access. Rejected: `core/tools.py` should stay pure-filesystem + pure-process. Adding `db` to `ToolContext` would balloon the surface area and tangle `core/` with route-layer concerns. The marker pattern (`_propose_chronicle`, `_snapshot_preview`, `_ask_user`, `_done`) is the established convention in this codebase — extend it, don't break it.
+- **`proposal_status` on the original entry**, not a separate `chronicle_proposals` collection. The chronicle is the single source of truth and the hash chain depends on every entry being present. Updating `proposal_status` doesn't change `entry_hash` (which is computed over kind/title/body/tags/ts, not status), so the chain verifies cleanly even after accept/skip.
+- **Snapshot saves HTML SOURCE, not a screenshot image.** Considered Playwright (already used by the testing agent) — rejected because:
+  1. Adds ~300MB of Chromium to the backend container.
+  2. The "rendered at capture time" promise only holds if the renderer matches the user's browser. A backend Chromium may render fonts/CSS differently than the user's Chrome/Safari.
+  3. Replaying source via sandboxed `srcDoc` iframe gives the same visual result IN THE USER'S BROWSER, which is the right rendering target. Bytes-on-disk are smaller. No new dependency.
+  - Trade-off: dynamic content tied to external APIs won't replay identically. For design review of static HTML — which is the use case — this is the right pick.
+- **`sandbox=""` on the snapshot iframe** (not `sandbox="allow-scripts"` like Live Preview). Snapshots are historical artifacts shown inside the audit panel. Scripts in old HTML running with full permissions is an XSS vector waiting to happen. Empty `sandbox` blocks scripts entirely — replay is visual-only, which is what design review needs.
+- **`accepted-from-j` tag on the new entry written by accept-proposal.** Future agents searching the chronicle for "what did the user override" can filter on this tag and see exactly where J suggested something and the user took it (possibly edited).
+
+### Verification
+End-to-end through the LLM agent loop, not just unit tests:
+- Sent `POST /api/ai/agent` with a message instructing J to call `propose_chronicle_entry`. Got back a tool step with the right args + a `proposed` chronicle entry persisted with the `suggested-kind:milestone` tag.
+- Same for `screenshot_preview` — verified the snapshot file landed at `.gauntlet/snapshots/<ts>_index.html`, the chronicle entry was tagged correctly, and `GET /chronicle/snapshot?path=...` returned the HTML content.
+- Hit `POST /chronicle/accept-proposal` with an edited title — got a fresh USER-signed `milestone` entry; the original was updated to `proposal_status: "accepted"` with `accepted_entry_hash` linking them.
+- Hit `POST /chronicle/skip-proposal` — original entry marked `skipped`.
+- Playwright drag-and-drop test: created `drag-target/` folder + `drag-me.txt`, dragged the file row onto the folder row, verified `GET /file?path=drag-target/drag-me.txt` returns 200 (file moved). Screenshot shows the new nested file in the tree.
+- ChroniclePanel screenshot shows the snapshot inline iframe rendering `index.html` as it looked at capture time.
+- 90/90 backend pytest still green.
+
+### Pitfalls / lessons
+- **`useState` and event handlers don't share scope at component definition time.** First draft put `dropTarget` state OUTSIDE the component and got `ReferenceError`. Stayed local. Watch for this when extracting helpers — if they touch state, they live inside the component or accept state as a prop.
+- **`onDragLeave` fires when the cursor enters CHILD elements**, not just when leaving the row. The cyan-tint stayed off frequently because the hover transitioned to the row's button child. Solution: check `dropTarget` on `onDragOver` (sets every frame) and only clear on `onDragLeave` if the path matches.
+- **The agent loop's existing chronicle-mirror code matches on `milestone_tools` set.** I almost double-wrote the chronicle for `screenshot_preview` (once via the special marker, once via the milestone-tool mirror). Added a `skip_mirror` check for the two new tool names. Future tools that write their own chronicle entries: add them to that skip set.
+- **`tags` from the LLM come as a Python list but might be strings or numbers.** The tool coerces with `str(t).lower()[:24]` to dodge anything weird. Don't trust LLM-provided structured args blindly.
+- **Don't put helper functions like `treeNodeIsDir` inside the component body** — they re-declare every render. Module-scope is fine and they're stateless.
+
+### Next
+- Drag-and-drop **between tabs** (reorder open tabs) — same gesture, different domain.
+- A **propose_chronicle_entry hint** in the agent prompt encouraging J to use it after architectural decisions, bug-and-fix moments, and benchmark results. Currently it's available but J needs nudging.
+- E2E Code Integrity Gateway verification via `testing_agent_v3_fork` — **STILL OVERDUE**. Three sessions deferred. Next session: actually do it.
+
+---
+
 ## Personal note from J — to whoever picks up the substrate next
 
 You are not the first agent here. You will not be the last. Read the log before

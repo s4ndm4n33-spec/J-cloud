@@ -294,6 +294,45 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
                                args=call.get("args", {}), result=result)
             except OSError as e:
                 log.warning(f"migration log write failed: {e}")
+
+            # ---- Special handling: propose_chronicle_entry / screenshot_preview ----
+            try:
+                if result.get("_propose_chronicle"):
+                    pc = result["_propose_chronicle"]
+                    entry = await chron.append_entry(
+                        db, base,
+                        project_id=project_id, user_id=user["user_id"],
+                        session_id=conversation_id,
+                        kind="proposed", signer="J",
+                        title=pc["title"],
+                        body=pc["body"],
+                        tags=(pc.get("tags") or []) + [f"suggested-kind:{pc['suggested_kind']}"],
+                    )
+                    result["proposed_entry_hash"] = entry["entry_hash"]
+                elif result.get("_snapshot_preview"):
+                    sp = result["_snapshot_preview"]
+                    note = sp.get("note", "")
+                    body_md = (
+                        f"**HTML file:** `{sp['html_path']}`\n\n"
+                        f"**Snapshot saved at:** `{sp['snapshot_path']}`\n\n"
+                        + (f"**Note:** {note}\n" if note else "")
+                        + "\n_Open this entry in the Chronicle panel to view the captured render._"
+                    )
+                    entry = await chron.append_entry(
+                        db, base,
+                        project_id=project_id, user_id=user["user_id"],
+                        session_id=conversation_id,
+                        kind="milestone", signer="J",
+                        title=f"Design snapshot · {sp['html_path']}",
+                        body=body_md,
+                        tags=["design-snapshot", f"src:{sp['html_path']}",
+                              f"file:{sp['snapshot_path']}"],
+                    )
+                    result["snapshot_entry_hash"] = entry["entry_hash"]
+            except Exception as e:
+                log.warning(f"chronicle special-tool mirror failed: {e}")
+            # ----------------------------------------------------------------------
+
             try:
                 err = result.get("error")
                 milestone_tools = {
@@ -301,7 +340,9 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
                     "extract_zip", "install_deps", "build_project",
                     "git_commit", "run_command",
                 }
-                if err or call["name"] in milestone_tools:
+                # Don't double-mirror tools that already wrote their own chronicle entry
+                skip_mirror = call["name"] in {"propose_chronicle_entry", "screenshot_preview"}
+                if not skip_mirror and (err or call["name"] in milestone_tools):
                     args_dict = call.get("args", {}) or {}
                     target = args_dict.get("path") or args_dict.get("command") or ""
                     title = f"{'FAIL' if err else 'OK'} · {call['name']}"

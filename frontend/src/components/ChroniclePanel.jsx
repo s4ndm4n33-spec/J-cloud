@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Scroll, Download, ShieldCheck, Plus, ArrowsClockwise, X, Robot, User, CircleNotch, Funnel, MagnifyingGlass } from "@phosphor-icons/react";
+import {
+  Scroll, Download, ShieldCheck, Plus, ArrowsClockwise, X, Robot, User,
+  CircleNotch, Funnel, MagnifyingGlass, Check, SkipForward, PencilSimple, Eye,
+} from "@phosphor-icons/react";
 import {
   listChronicle, listChronicleSessions, addChronicleEntry,
-  verifyChronicle, exportChronicle,
+  verifyChronicle, exportChronicle, acceptChronicleProposal,
+  skipChronicleProposal, readChronicleSnapshot,
 } from "@/lib/api";
 
 const SIGNER_COLORS = {
@@ -13,12 +17,75 @@ const SIGNER_COLORS = {
 
 function shortHash(h) { return (h || "").slice(0, 10); }
 
-function EntryCard({ entry }) {
+function snapshotPathFromTags(tags) {
+  for (const t of tags || []) {
+    if (typeof t === "string" && t.startsWith("file:.gauntlet/snapshots/")) {
+      return t.slice(5);
+    }
+  }
+  return null;
+}
+
+function EntryCard({ entry, projectId, onRefresh }) {
   const c = SIGNER_COLORS[entry.signer] || SIGNER_COLORS.SYSTEM;
   const Icon = entry.signer === "J" ? Robot : entry.signer === "USER" ? User : Scroll;
+  const isProposed = entry.kind === "proposed" && !entry.proposal_status;
+  const isSkipped = entry.proposal_status === "skipped";
+  const isAccepted = entry.proposal_status === "accepted";
+  const snapshotPath = snapshotPathFromTags(entry.tags);
+
+  // Local UI state for snapshot inline render
+  const [snapHtml, setSnapHtml] = useState(null);
+  const [snapLoading, setSnapLoading] = useState(false);
+  const [snapErr, setSnapErr] = useState(null);
+
+  // Local UI state for accept-with-edit
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(entry.title);
+  const [editBody, setEditBody] = useState(entry.body || "");
+  const [busy, setBusy] = useState(false);
+
+  async function toggleSnapshot() {
+    if (snapHtml !== null) { setSnapHtml(null); return; }
+    if (!snapshotPath) return;
+    setSnapLoading(true); setSnapErr(null);
+    try {
+      const r = await readChronicleSnapshot(projectId, snapshotPath);
+      setSnapHtml(r.content || "");
+    } catch (e) {
+      setSnapErr(e?.response?.data?.detail || "Could not load snapshot");
+    } finally { setSnapLoading(false); }
+  }
+
+  async function accept(viaEdit = false) {
+    setBusy(true);
+    try {
+      await acceptChronicleProposal(projectId, {
+        entry_hash: entry.entry_hash,
+        ...(viaEdit ? { title: editTitle, body: editBody } : {}),
+      });
+      onRefresh?.();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Accept failed");
+    } finally { setBusy(false); setEditing(false); }
+  }
+
+  async function skip() {
+    if (!window.confirm("Skip this proposed chronicle entry?")) return;
+    setBusy(true);
+    try {
+      await skipChronicleProposal(projectId, entry.entry_hash);
+      onRefresh?.();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Skip failed");
+    } finally { setBusy(false); }
+  }
+
   return (
     <div
-      className="border-l-2 px-3 py-2"
+      className={`border-l-2 px-3 py-2 ${
+        isProposed ? "border-dashed outline outline-1 outline-cyan/30" : ""
+      } ${isSkipped ? "opacity-50" : ""}`}
       style={{ borderColor: c.fg, background: c.bg }}
       data-testid={`chronicle-entry-${entry.entry_id}`}
     >
@@ -26,25 +93,136 @@ function EntryCard({ entry }) {
         <Icon size={11} style={{ color: c.fg }} weight="fill" />
         <span className="font-mono text-[0.65rem]" style={{ color: c.fg }}>{entry.signer}</span>
         <span className="font-mono text-[0.6rem] text-alloy/70">{entry.kind}</span>
+        {isProposed && (
+          <span className="font-mono text-[0.55rem] text-cyan px-1.5 py-0.5 border border-cyan/40 tracking-wider">
+            // PROPOSED · NEEDS YOUR CALL
+          </span>
+        )}
+        {isSkipped && (
+          <span className="font-mono text-[0.55rem] text-alloy px-1.5 py-0.5 border border-alloy/30 tracking-wider">
+            // SKIPPED
+          </span>
+        )}
+        {isAccepted && (
+          <span className="font-mono text-[0.55rem] text-cyan/70 px-1.5 py-0.5 border border-cyan/20 tracking-wider">
+            // ACCEPTED
+          </span>
+        )}
         <span className="font-mono text-[0.6rem] text-alloy ml-auto">{entry.ts_iso?.slice(0, 19).replace("T", " ")}</span>
         <span
           className="font-mono text-[0.55rem] text-alloy/50"
           title={`hash ${entry.entry_hash}\nprior ${entry.prior_hash}`}
         >{shortHash(entry.entry_hash)}</span>
       </div>
-      <div className="font-display text-[0.8rem] text-gridwhite tracking-[0.05em] mb-1">{entry.title}</div>
-      {entry.body && (
-        <div className="font-mono text-[0.7rem] text-gridwhite/80 leading-relaxed whitespace-pre-wrap">
-          {entry.body}
-        </div>
+
+      {editing ? (
+        <>
+          <input
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            className="w-full bg-midnight border border-cyan/30 px-2 py-1 mb-2 font-display text-[0.8rem] text-gridwhite"
+            data-testid={`chronicle-edit-title-${entry.entry_id}`}
+          />
+          <textarea
+            rows={4}
+            value={editBody}
+            onChange={(e) => setEditBody(e.target.value)}
+            className="w-full bg-midnight border border-cyan/30 px-2 py-1 font-mono text-[0.7rem] text-gridwhite resize-none"
+            data-testid={`chronicle-edit-body-${entry.entry_id}`}
+          />
+        </>
+      ) : (
+        <>
+          <div className="font-display text-[0.8rem] text-gridwhite tracking-[0.05em] mb-1">{entry.title}</div>
+          {entry.body && (
+            <div className="font-mono text-[0.7rem] text-gridwhite/80 leading-relaxed whitespace-pre-wrap">
+              {entry.body}
+            </div>
+          )}
+        </>
       )}
+
       {(entry.tags || []).length > 0 && (
-        <div className="flex gap-1 mt-2">
+        <div className="flex gap-1 mt-2 flex-wrap">
           {entry.tags.map((t, i) => (
             <span key={i} className="font-mono text-[0.55rem] text-cyan/80 border border-cyan/30 px-1.5 py-0.5">
               {t}
             </span>
           ))}
+        </div>
+      )}
+
+      {/* Snapshot expand/collapse */}
+      {snapshotPath && (
+        <div className="mt-2">
+          <button
+            onClick={toggleSnapshot}
+            disabled={snapLoading}
+            data-testid={`chronicle-snapshot-toggle-${entry.entry_id}`}
+            className="flex items-center gap-1 font-mono text-[0.65rem] text-cyan hover:text-gridwhite border border-cyan/30 hover:border-cyan px-2 py-1 transition-colors"
+          >
+            <Eye size={11} />
+            {snapLoading ? "loading…" : snapHtml === null ? "VIEW SNAPSHOT" : "HIDE SNAPSHOT"}
+          </button>
+          {snapErr && <div className="mt-1 font-mono text-[0.6rem] text-orange">// {snapErr}</div>}
+          {snapHtml !== null && (
+            <div className="mt-2 border border-cyan/20 bg-steel" data-testid={`chronicle-snapshot-frame-${entry.entry_id}`}>
+              <iframe
+                title={`snapshot-${entry.entry_id}`}
+                srcDoc={snapHtml}
+                sandbox=""
+                style={{ width: "100%", height: 280, border: 0, background: "#fff" }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Proposed-entry action bar */}
+      {isProposed && (
+        <div className="mt-3 flex items-center gap-2 pt-2 border-t border-cyan/15">
+          {editing ? (
+            <>
+              <button
+                onClick={() => accept(true)}
+                disabled={busy}
+                data-testid={`chronicle-accept-edited-${entry.entry_id}`}
+                className="flex items-center gap-1 font-mono text-[0.65rem] text-midnight bg-cyan hover:bg-cyan/80 px-2 py-1"
+              >
+                <Check size={11} weight="bold" /> ACCEPT EDITED
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                className="font-mono text-[0.65rem] text-alloy hover:text-gridwhite px-2 py-1"
+              >CANCEL EDIT</button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() => accept(false)}
+                disabled={busy}
+                data-testid={`chronicle-accept-${entry.entry_id}`}
+                className="flex items-center gap-1 font-mono text-[0.65rem] text-midnight bg-cyan hover:bg-cyan/80 px-2 py-1"
+              >
+                <Check size={11} weight="bold" /> ACCEPT
+              </button>
+              <button
+                onClick={() => setEditing(true)}
+                data-testid={`chronicle-edit-${entry.entry_id}`}
+                className="flex items-center gap-1 font-mono text-[0.65rem] text-cyan border border-cyan/40 hover:border-cyan hover:bg-cyan/10 px-2 py-1"
+              >
+                <PencilSimple size={11} /> EDIT
+              </button>
+              <button
+                onClick={skip}
+                disabled={busy}
+                data-testid={`chronicle-skip-${entry.entry_id}`}
+                className="ml-auto flex items-center gap-1 font-mono text-[0.65rem] text-alloy hover:text-orange border border-alloy/30 hover:border-orange px-2 py-1"
+              >
+                <SkipForward size={11} /> SKIP
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>
@@ -378,7 +556,14 @@ export default function ChroniclePanel({ project }) {
             // no entries yet. Chat with J or click + to start the chronicle.
           </div>
         )}
-        {filtered.map((e) => <EntryCard key={e.entry_id || e.entry_hash} entry={e} />)}
+        {filtered.map((e) => (
+          <EntryCard
+            key={e.entry_id || e.entry_hash}
+            entry={e}
+            projectId={projectId}
+            onRefresh={refresh}
+          />
+        ))}
       </div>
     </div>
   );

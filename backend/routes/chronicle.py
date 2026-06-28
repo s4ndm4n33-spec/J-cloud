@@ -64,6 +64,98 @@ async def append_chronicle_entry(
     return {"ok": True, "entry": entry}
 
 
+@router.post("/projects/{project_id}/chronicle/accept-proposal")
+async def accept_chronicle_proposal(
+    project_id: str, payload: dict, user: dict = Depends(get_current_user),
+):
+    """Accept J's proposed chronicle entry — writes a fresh signed entry with
+    the user's (possibly edited) title/body, then marks the original proposal
+    as accepted.
+
+    Payload: { entry_hash, title?, body?, tags?, kind? }
+    The kind defaults to whatever the proposal suggested
+    (via tag `suggested-kind:milestone|narrative|user_note`).
+    """
+    await require_project(user, project_id)
+    entry_hash = (payload.get("entry_hash") or "").strip()
+    if not entry_hash:
+        raise HTTPException(status_code=400, detail="entry_hash required")
+    proposal = await db.chronicle_entries.find_one(
+        {"project_id": project_id, "entry_hash": entry_hash, "kind": "proposed"},
+        {"_id": 0},
+    )
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposed entry not found")
+
+    # Derive default kind from suggested-kind tag
+    default_kind = "milestone"
+    for t in proposal.get("tags", []):
+        if isinstance(t, str) and t.startswith("suggested-kind:"):
+            sk = t.split(":", 1)[1]
+            if sk in {"milestone", "narrative", "user_note"}:
+                default_kind = sk
+            break
+
+    title = (payload.get("title") or proposal.get("title") or "").strip()
+    body = payload.get("body") if payload.get("body") is not None else proposal.get("body") or ""
+    tags = payload.get("tags") or [
+        t for t in proposal.get("tags", []) if not (isinstance(t, str) and t.startswith("suggested-kind:"))
+    ]
+    kind = payload.get("kind") or default_kind
+    if kind not in {"user_note", "milestone", "narrative"}:
+        raise HTTPException(status_code=400, detail="invalid kind")
+
+    entry = await chron.append_entry(
+        db, project_path(user["user_id"], project_id),
+        project_id=project_id, user_id=user["user_id"],
+        session_id=proposal.get("session_id", f"accepted_{uuid.uuid4().hex[:8]}"),
+        kind=kind, signer="USER", title=title, body=body,
+        tags=[str(t) for t in tags][:8] + ["accepted-from-j"],
+    )
+    # Mark original as resolved (don't delete — keeps the audit trail intact)
+    await db.chronicle_entries.update_one(
+        {"project_id": project_id, "entry_hash": entry_hash},
+        {"$set": {"proposal_status": "accepted",
+                  "accepted_entry_hash": entry["entry_hash"]}},
+    )
+    entry.pop("_id", None)
+    return {"ok": True, "entry": entry}
+
+
+@router.post("/projects/{project_id}/chronicle/skip-proposal")
+async def skip_chronicle_proposal(
+    project_id: str, payload: dict, user: dict = Depends(get_current_user),
+):
+    """Mark a proposed entry as skipped — kept in the log for audit, just flagged."""
+    await require_project(user, project_id)
+    entry_hash = (payload.get("entry_hash") or "").strip()
+    if not entry_hash:
+        raise HTTPException(status_code=400, detail="entry_hash required")
+    r = await db.chronicle_entries.update_one(
+        {"project_id": project_id, "entry_hash": entry_hash, "kind": "proposed"},
+        {"$set": {"proposal_status": "skipped"}},
+    )
+    if not r.matched_count:
+        raise HTTPException(status_code=404, detail="Proposed entry not found")
+    return {"ok": True, "entry_hash": entry_hash, "status": "skipped"}
+
+
+@router.get("/projects/{project_id}/chronicle/snapshot")
+async def read_snapshot(
+    project_id: str, path: str, user: dict = Depends(get_current_user),
+):
+    """Read a saved `.gauntlet/snapshots/...html` file as text (for inline render)."""
+    from deps import safe_join as _safe_join
+    await require_project(user, project_id)
+    if not path.startswith(".gauntlet/snapshots/"):
+        raise HTTPException(status_code=400, detail="Not a snapshot path")
+    base = project_path(user["user_id"], project_id)
+    target = _safe_join(base, path)
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return {"path": path, "content": target.read_text(encoding="utf-8")}
+
+
 @router.get("/projects/{project_id}/chronicle/export")
 async def export_chronicle(
     project_id: str,
