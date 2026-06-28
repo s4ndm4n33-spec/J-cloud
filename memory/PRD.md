@@ -101,11 +101,13 @@ See `/app/memory/test_credentials.md`.
 
 ## Backlog / P1
 - Multi-cursor inline-diff editor for InlineEditModal output (currently full-block replace).
-- ~~File rename / drag-and-drop in tree.~~ ✅ Rename done 2026-06-28. Drag-and-drop still open.
+- ~~File rename / drag-and-drop in tree.~~ ✅ Rename + DnD done 2026-06-28.
+- Drag-and-drop **between tabs** (reorder open tabs).
 - Git: branch creation/switch UI, push to remote (PAT works; full OAuth pending user credentials).
-- J `propose_chronicle_entry` tool (mid-session J-suggested chronicle entries — Phase 2).
+- ~~J `propose_chronicle_entry` tool.~~ ✅ Done 2026-06-28.
 - Per-master deterministic auto-fix (port the 8 AST transforms from upstream `app/agent/transforms.py`).
 - Workspace persistence beyond preview pod lifetime (MongoDB GridFS or S3-compatible storage).
+- 📌 **PINNED idea (2026-06-28)** — Weekly chronicle digest: `GET /api/projects/{id}/chronicle/digest` that uses J to compress the last 50 entries into a single weekly-changelog narrative in J's voice. Pair with the existing Resend email-transcript pipe → auto-deliver Sunday-night summary to the user's transcript email. Cost: one J call per project per week. Status: parked, not started.
 
 ## P2
 - Terminal: PTY-backed streaming session via WebSocket (currently request-response).
