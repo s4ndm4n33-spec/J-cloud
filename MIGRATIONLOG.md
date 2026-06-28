@@ -18,6 +18,48 @@
 
 ---
 
+## 2026-06-28 05:00 UTC · README.md replaced with a proper one — signed: J (Claude Sonnet 4.5 via Universal Key)
+
+### What broke
+`/app/README.md` was a 29-byte placeholder reading "# Here are your Instructions". For a project that's deployed at https://blue-j-gauntlet.com and ready to be `Save to GitHub`-ed, that's a missed handshake — anyone discovering the repo had no idea what this thing is, what makes it different, or how to run it.
+
+### How we fixed it
+Rewrote `/app/README.md` as a 319-line, 15-section on-brand document covering:
+- ASCII art GAUNTLET wordmark + tagline + brand badges.
+- "What this is" — punchy 3-paragraph hook leading with the Integrity Gateway, Chronicle, Five Masters, J persona, destructive interlock, LLM failover, Private Mode.
+- Text-art "Quick look" panel showing the tri-pane IDE layout.
+- "Operating principles" table — 7 principles, each pointing at the file that enforces it.
+- "J persona" section — explains the design-diff pattern, propose_chronicle_entry, the failover behavior, Private Mode respect, brand voice.
+- Full architecture diagram (text art) — Client → FastAPI → Mongo + LLM providers, with route module list.
+- Tech stack table — Frontend / Backend / LLMs / Infra.
+- Run-locally instructions including the 90/90 test run.
+- Deep dives on Code Integrity Gateway / Chronicle / Five Masters / Destructive Interlock / Private Mode (one section each).
+- "Files of reference" table for new contributors — points at the right starter files per concern.
+- **"For LLM agents picking up this codebase"** section — pointers to MIGRATIONLOG, the truncation cardinal sin, the chronicle invariants, the brand voice.
+- Roadmap excerpt with pinned items.
+
+### Why we fixed it that way
+- **README serves three audiences simultaneously**: potential users (what is this?), human contributors (how do I run it / where do I start?), and AI agents picking up the codebase in future sessions (what's the contract?). Wrote ONE document that does all three without fluff. Each audience can grep their section.
+- **ASCII wordmark instead of an image**. README is read on GitHub web, in terminals, in agent context windows, in plaintext editors. A markdown image URL would break in three of those four. ASCII renders everywhere.
+- **Table-of-files at the bottom is intentional**. New contributors typically open a README and immediately ask "where do I start?". The "Files of reference" table answers that without prose.
+- **"For LLM agents" section reuses language from the agent prompt's CHRONICLE HYGIENE block**. Future agents read both. Identical phrasing reinforces the rules.
+- **No "License" section**. Codebase doesn't have one yet — added a badge that says `proprietary` rather than fabricate an MIT/Apache claim. The user can change it on push to GitHub.
+- **Direct links to MIGRATIONLOG.md from the README**. Discoverability for the next agent — the README is the front door, the log is the engineering memory, the link is the bridge.
+
+### Verification
+File written, line count + section count verified (319 / 15). No code changes — pure documentation. No tests apply.
+
+### Pitfalls / lessons
+- **ASCII art can get mangled by markdown parsers**. Wrapped the GAUNTLET wordmark in a `<div align="center">` + triple-backtick fenced block. GitHub renders it correctly; the terminal `cat` also renders it. Future edits: don't remove the code fence around the wordmark.
+- **The brand voice ("if it can't prove integrity, it halts") is the closer**. Resist the temptation to add a more conventional "Contributing" / "Issues" / "Code of Conduct" tail — they'd dilute the closing line. If the user wants those, they go in separate files.
+- **Don't include preview/production URLs in the README**. Per environment policy, deployment URLs are not for agents to disclose. The only URL in this README is `bluejgenesis.com` (the user's own brand domain, public knowledge).
+
+### Next
+- If the user adopts MIT or another OSS license, swap the proprietary badge + add a `## License` section.
+- A short `CONTRIBUTING.md` could pair with the README's "Files of reference" table — currently the README is doing both jobs.
+
+---
+
 ## 2026-06-28 04:30 UTC · CHRONICLE HYGIENE + DESIGN-DIFF PATTERN in agent prompt — signed: J (Claude Sonnet 4.5 via Universal Key)
 
 ### What broke (or was missing)
