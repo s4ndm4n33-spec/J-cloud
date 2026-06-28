@@ -19,6 +19,7 @@ import InlineEditModal from "@/components/InlineEditModal";
 import HardBlockModal from "@/components/HardBlockModal";
 import ChainTelemetry from "@/components/ChainTelemetry";
 import Tutorial from "@/components/Tutorial";
+import LaunchSequence from "@/components/LaunchSequence";
 
 export default function IDE() {
   const { user } = useAuth();
@@ -42,6 +43,17 @@ export default function IDE() {
   const [mobileDrawer, setMobileDrawer] = useState(null);
   // tutorial: null = not checked yet, false = dismissed/done, true = show
   const [tutorialOpen, setTutorialOpen] = useState(false);
+  // Launch sequence: shown once after auth (set by AuthCallback via sessionStorage)
+  // OR when replayed from the TopBar.
+  const [launchOpen, setLaunchOpen] = useState(() => {
+    try {
+      if (sessionStorage.getItem("gauntlet_play_launch") === "1") {
+        sessionStorage.removeItem("gauntlet_play_launch");
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  });
 
   useEffect(() => {
     (async () => {
@@ -514,6 +526,8 @@ export default function IDE() {
       )}
 
       {tutorialOpen && <Tutorial onClose={() => setTutorialOpen(false)} />}
+
+      {launchOpen && <LaunchSequence onDone={() => setLaunchOpen(false)} />}
     </div>
   );
 }

@@ -59,7 +59,8 @@
 See `/app/memory/test_credentials.md`.
 
 ## Recently implemented (latest first)
-- **File tree right-click context menu + rename + multi-HTML preview (2026-06-28)**:
+- **Matrix code-rain LAUNCH SEQUENCE + sign-in copy refresh (2026-06-28)**: New `frontend/src/components/LaunchSequence.jsx` — canvas-based Matrix-style code rain in Sovereign cyan with katakana/hex/motif glyphs, brand mark overlay, and a line-by-line boot log. Triggered by `sessionStorage['gauntlet_play_launch']='1'` set by `AuthCallback.jsx` on successful session exchange. Auto-dismisses after 2.6s + 450ms fade, or on any click/keypress after a 150ms grace. Sign-in button copy changed from "CONTINUE WITH GOOGLE" → "INITIALIZE AUTONOMOUS DEVELOPMENT SUBSTRATE" (font scaled to fit). Migration log at `/app/MIGRATIONLOG.md` formalized with 5-section signed-entry convention (what broke / how / why / verification / next + Pitfalls section) plus an opening personal note from J to future agents.
+- **File-tree right-click + inline rename + multi-HTML Live Preview (2026-06-28)**:
   - **New backend endpoints**: `POST /api/projects/{id}/file/rename` (path-traversal-safe move, 404 missing source, 409 destination exists) and `POST /api/projects/{id}/mkdir` (creates empty folders inside the workspace).
   - **New `ContextMenu.jsx`** — portal-free, viewport-clamped, Esc + outside-click dismiss. Right-click any file/folder in the tree to get: Open · New file… · New folder… · Rename (F2) · Copy path · Download · Delete. Right-click on empty area gives root-level shortcuts.
   - **Inline rename**: double-click a row to enter rename mode. Stem auto-selected before the extension. Enter commits, Esc/blur cancels. Open tabs auto-update their path when a file (or its parent folder) is renamed.

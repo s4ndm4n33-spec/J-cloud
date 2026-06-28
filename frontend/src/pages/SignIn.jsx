@@ -73,7 +73,7 @@ export default function SignIn() {
           <button
             data-testid="google-signin-button"
             onClick={handleGoogle}
-            className="mt-8 w-full btn-solid justify-center py-3 text-[0.85rem]"
+            className="mt-8 w-full btn-solid justify-center py-3 text-[0.7rem] sm:text-[0.8rem] tracking-[0.15em]"
           >
             <svg width="18" height="18" viewBox="0 0 18 18" className="-ml-1">
               <path fill="#0B0F14" d="M17.64 9.205c0-.638-.057-1.252-.164-1.841H9v3.481h4.844a4.14 4.14 0 01-1.796 2.716v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.614z"/>
@@ -81,7 +81,7 @@ export default function SignIn() {
               <path fill="#0B0F14" d="M3.964 10.71A5.41 5.41 0 013.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 000 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>
               <path fill="#0B0F14" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 00.957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
             </svg>
-            CONTINUE WITH GOOGLE
+            INITIALIZE AUTONOMOUS DEVELOPMENT SUBSTRATE
           </button>
 
           {inApp && (

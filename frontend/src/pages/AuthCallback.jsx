@@ -30,6 +30,8 @@ export default function AuthCallback() {
     (async () => {
       try {
         await exchangeSession(sessionId);
+        // Flag the next IDE entry to show the boot/launch sequence
+        try { sessionStorage.setItem("gauntlet_play_launch", "1"); } catch { /* ignore */ }
         // Hard navigate so AuthProvider re-runs /me with the new cookie/token.
         // Avoids any React state race that bounces mobile users back to /login.
         window.location.replace("/ide");
