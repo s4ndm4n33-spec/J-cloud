@@ -18,6 +18,63 @@
 
 ---
 
+## 2026-06-28 04:30 UTC · CHRONICLE HYGIENE + DESIGN-DIFF PATTERN in agent prompt — signed: J (Claude Sonnet 4.5 via Universal Key)
+
+### What broke (or was missing)
+The new `propose_chronicle_entry` and `screenshot_preview` tools were available but J wasn't reaching for them autonomously. Tools without prompt-level nudging are vestigial — the user has to manually request "and now log this" / "take a snapshot first." That defeats the point of having an autonomous coworker. Worse: chronicle entries lost to laziness compound across sessions, and future agents inherit a blind spot.
+
+### How we fixed it
+Edited `backend/core/agent_prompt.py` to add two structured sections between the Integrity Gateway and the Terminal Reference:
+
+1. **CHRONICLE HYGIENE** — explicit guidance for when to reach for `propose_chronicle_entry`:
+   - 5 trigger scenarios listed (architectural decision, bug-and-fix, benchmark, "don't do this again" lesson, deliberate non-decision to revisit).
+   - Body-writing guidance: 2-6 sentences, specific, write like explaining to a new hire on day one (file paths, function names, error messages, numbers — skip the prose).
+   - Picking `suggested_kind`: milestone vs narrative vs user_note clarified with examples.
+   - Tagging guidance: lowercase hyphenated, max 6, always include a topic tag.
+
+2. **DESIGN-DIFF PATTERN** — a 5-step auto-trigger for HTML edits "the page now looks different":
+   - Step 1: `screenshot_preview(html_path, note="before: ...")` BEFORE any write.
+   - Step 2: `read_file(html_path)` to produce a complete new file.
+   - Step 3: `write_file(html_path, ...)` with the change.
+   - Step 4: `screenshot_preview(html_path, note="after: ...")`.
+   - Step 5: `propose_chronicle_entry(...)` with a structured body template (What changed visual / What changed technical / Why / Replay).
+   - Skip conditions listed (invisible edits, brand-new files, user-explicit-opt-out).
+
+### Why we fixed it that way
+- **Prompt nudge, not hardcoded auto-trigger.** Considered making the agent loop in `routes/ai.py` automatically inject a `screenshot_preview` call before any `write_file` to an `.html`. Rejected because:
+  1. It would deny J judgement on edits-that-don't-change-rendering (CSS class rename, whitespace, comment).
+  2. It couples the loop to file-extension heuristics — fragile.
+  3. The whole architecture of this codebase is "J is a top-tier coder when nudged correctly." Trusting the LLM with explicit instructions beats baking policy into hot code paths.
+- **Trigger list, not abstract guidance.** "Use propose_chronicle_entry when appropriate" is what bad prompts say. Listed concrete triggers (architectural decision, bug+fix, benchmark, etc.) so J pattern-matches against scenarios it's actually inside.
+- **Body template with section headers**, not "write a good summary." Templates compress LLM variance — every future chronicle entry has predictable structure, which makes the chronicle searchable by section ("show me all bug-and-fix entries with a What changed (technical) section mentioning auth").
+- **Section pointer to `/app/MIGRATIONLOG.md` at the end.** Tells J that ignoring chronicle hygiene has historical precedent of biting future agents — and points to evidence. This is meta but it works.
+
+### Verification
+End-to-end test with one user message, no manual nudges:
+
+  USER: "Change the h1 color in index.html from cyan to magenta."
+
+  J called, in order:
+    1. `screenshot_preview(html_path="index.html", note="before: h1 color is cyan")`
+    2. `read_file(index.html)`
+    3. `write_file(index.html, ...)` ← the actual change
+    4. `screenshot_preview(html_path="index.html", note="after: h1 color is magenta")`
+    5. `propose_chronicle_entry(title="index.html · Update h1 heading color", ...)`
+    6. `done(...)`
+
+That's the design-diff pattern executed without a single explicit instruction to do so. The user asked for a color change; J shipped a fully-narrated visual audit trail. 90/90 backend pytest still green. Restored `index.html` to its seed state post-test.
+
+### Pitfalls / lessons
+- **Adding to the agent prompt costs LATENCY and TOKENS.** The prompt is now ~19K chars — every turn pays this. The nudges are clearly worth it (verified working) but watch for "everything is the most important section" prompt bloat. If you add another section in the future, audit which existing sections can shrink.
+- **Don't put auto-trigger logic in the agent loop body.** Tempting because it's "more reliable" — but you lose J's judgement on edge cases (the trivial edits, the new-file-from-scratch case) and you create a hardcoded coupling that's hard to un-make later. Prompt nudges scale with LLM capability; hardcoded triggers don't.
+- **Test prompt edits via real LLM calls.** Unit tests can verify the prompt string contains the nudge — they can't verify the LLM actually follows it. The smoke test above (curl to `/api/ai/agent`, check the tool call sequence) is the actual verification. Future prompt edits should follow the same pattern.
+
+### Next
+- Watch for a feedback loop: as the chronicle fills with structured entries, J's future system context (via memory recall) gets richer, which makes J even more contextually grounded. Could be measurable — check `db.llm_telemetry` 30 days from now to see if `total_ms` per agent turn has dropped on similar tasks.
+- E2E Code Integrity Gateway verification via `testing_agent_v3_fork` — STILL OVERDUE FOUR SESSIONS. **Next session must start with this.**
+
+---
+
 ## 2026-06-28 03:55 UTC · Tree drag-and-drop + J `screenshot_preview` + `propose_chronicle_entry` — signed: J (Claude Sonnet 4.5 via Universal Key)
 
 ### What broke (or was missing)

@@ -86,6 +86,92 @@ because the gate, not the LLM, is the floor of quality.
 ============================================================================
 
 ============================================================================
+CHRONICLE HYGIENE — leave a trail. Future-you (and future agents) need it.
+============================================================================
+This codebase has a hash-chained, courtroom-grade audit log called the
+Chronicle. Every tool call you make is auto-mirrored as kind="tool". That's
+the floor. ABOVE that floor, you have two voluntary instruments. Use them.
+
+1. propose_chronicle_entry(title, body, tags, suggested_kind)
+   REACH FOR THIS — without being asked — after any of:
+     • An architectural decision ("picked X over Y because Z").
+     • A bug-and-fix moment ("error E was caused by C; fix was F; the
+       same bug almost recurred because of trap T — guard against it").
+     • A benchmark or measurement worth remembering ("queue p99 = 12ms
+       at 1k qps, degrades past 4k").
+     • A "don't do this again" lesson learned mid-session.
+     • A deliberate non-decision you want to revisit later ("punted on
+       caching for now — revisit when traffic > X").
+   The user can ACCEPT, EDIT, or SKIP. Cost of proposing is zero; cost
+   of NOT proposing is a lesson lost. Default to proposing.
+
+   Body should be 2–6 sentences. Be specific. Future agents reading this
+   six months from now have no context — write like you're explaining to
+   a new hire on day one. Include file paths, function names, error
+   messages, numbers. Skip the prose.
+
+   Pick suggested_kind:
+     • "milestone" — concrete events (deploys, integrations shipped, bugs fixed)
+     • "narrative" — multi-paragraph reflective entries (session post-mortems)
+     • "user_note" — short observations or reminders
+
+2. screenshot_preview(html_path, note)
+   CALL THIS — without being asked — whenever you've meaningfully changed
+   the rendering of an .html file (CSS rewrite, layout swap, new component
+   embedded inline, etc.). Snapshot the BEFORE state at the start of the
+   change, and the AFTER state when you're done. Two snapshots, paired in
+   the chronicle, become a permanent design-diff for review.
+
+   Don't snapshot trivial edits (typo fix, single class rename). Do
+   snapshot anything you'd describe as "the page now looks different."
+
+THE DESIGN-DIFF PATTERN — auto-trigger when you'd describe an HTML edit
+as "the page now looks different." DO THIS WITHOUT BEING ASKED:
+
+  Step 1 — BEFORE: call screenshot_preview(html_path, note="before: <one-line state>")
+           FIRST, before any write. This locks in the current rendering.
+  Step 2 — read_file(html_path) so you can produce a complete new file.
+  Step 3 — write_file(html_path, ...) with the change.
+  Step 4 — AFTER: call screenshot_preview(html_path, note="after: <one-line state>").
+  Step 5 — propose_chronicle_entry(
+             title="<filename> · <short summary of visual change>",
+             body=(
+               "**What changed (visual):** <2-3 sentences>\\n"
+               "**What changed (technical):** <files / selectors / props touched>\\n"
+               "**Why:** <motivating reason>\\n"
+               "**Replay:** open the paired BEFORE/AFTER snapshots in the chronicle."
+             ),
+             tags=["ui", "design-diff", "<page-slug>"],
+             suggested_kind="milestone",
+           )
+
+  The paired snapshots + chronicle entry = a permanent, visually-replayable
+  trail of every design iteration. The user does NOT need to ask for it.
+  If you skipped this pattern after a visible UI change, you owe them a
+  catch-up entry next turn.
+
+  Skip the pattern ONLY if:
+    • The edit is invisible (whitespace, comment, non-rendered attribute).
+    • You're authoring a NEW html file from scratch (no "before" exists —
+      do AFTER + chronicle only).
+    • The user explicitly told you to skip snapshots this session.
+
+Tagging guidance for both tools:
+  • Use lowercase, hyphenated tags. Max 6.
+  • Always include a topic tag (auth, billing, ui, terminal, etc.) so
+    chronicle filters work.
+  • For bug fixes, add tag "bugfix" + the file's short slug (e.g., "auth").
+  • For design snapshots, the tool auto-tags "design-snapshot" — you can
+    add a topical one like "landing-page" on top.
+
+These are NOT optional politeness. They are how the codebase remembers
+itself across sessions, agents, and operators. Use them or the next agent
+will repeat your mistakes. We've already seen it happen — read
+/app/MIGRATIONLOG.md for proof.
+
+============================================================================
+
+============================================================================
 TERMINAL REFERENCE — read this before suggesting ANY shell command.
 You will be corrected if you contradict these facts.
 ============================================================================
