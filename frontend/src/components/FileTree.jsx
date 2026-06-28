@@ -1,6 +1,14 @@
-import { useState, useMemo, useRef } from "react";
-import { File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight, Upload, DownloadSimple, Archive, FolderPlus, Trash } from "@phosphor-icons/react";
-import { uploadFile, uploadZip, uploadFolder, downloadUrl, downloadProjectZip, deleteFile } from "@/lib/api";
+import { useState, useMemo, useRef, forwardRef } from "react";
+import {
+  File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight,
+  Upload, DownloadSimple, Archive, FolderPlus, Trash, PencilSimple,
+  FilePlus, Copy,
+} from "@phosphor-icons/react";
+import {
+  uploadZip, uploadFolder, downloadUrl, downloadProjectZip,
+  deleteFile, renameFile, mkdir, writeFile,
+} from "@/lib/api";
+import ContextMenu from "@/components/ContextMenu";
 
 function flatten(tree, openMap, depth = 0, out = []) {
   for (const n of tree) {
@@ -15,12 +23,26 @@ function flatten(tree, openMap, depth = 0, out = []) {
   return out;
 }
 
-export default function FileTree({ tree, onOpen, onRefresh, activePath, projectId }) {
+function dirnameOf(path) {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? "" : path.slice(0, i);
+}
+function basenameOf(path) {
+  const i = path.lastIndexOf("/");
+  return i < 0 ? path : path.slice(i + 1);
+}
+
+export default function FileTree({ tree, onOpen, onRefresh, activePath, projectId, onRenamed }) {
   const [openMap, setOpenMap] = useState({});
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
-  const [uploading, setUploading] = useState(null); // { kind, name, pct }
+  const [uploading, setUploading] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  // Context menu state: { x, y, row } where row = {type, path, name}
+  const [menu, setMenu] = useState(null);
+  // Inline rename state: { path, value, isDir }
+  const [renaming, setRenaming] = useState(null);
+  const renameInputRef = useRef(null);
 
   const rows = useMemo(() => flatten(tree, openMap), [tree, openMap]);
 
@@ -32,7 +54,6 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     if (!files.length || !projectId) return;
     setUploading({ kind: "files", name: `${files.length} file(s)`, pct: 0 });
     try {
-      // If any file is a .zip, prefer zip extraction; else folder upload preserving paths
       const zips = files.filter((f) => /\.zip$/i.test(f.name));
       const others = files.filter((f) => !/\.zip$/i.test(f.name));
       for (const z of zips) {
@@ -43,7 +64,6 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
       }
       if (others.length) {
         setUploading({ kind: "folder", name: `${others.length} file(s)`, pct: 0 });
-        // Use webkitRelativePath when available
         const paths = others.map((f, i) => f.webkitRelativePath || (basePathArr?.[i] ?? f.name));
         await uploadFolder(projectId, others, paths, (e) => {
           if (e.total) setUploading({ kind: "folder", name: `${others.length} file(s)`, pct: Math.round((e.loaded / e.total) * 100) });
@@ -62,7 +82,6 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     e.target.value = "";
     await ingestFiles(files);
   }
-
   async function handleFolderUpload(e) {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
@@ -78,7 +97,6 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     const collected = [];
     const paths = [];
     if (items && items.length && items[0].webkitGetAsEntry) {
-      // Walk directories recursively
       const walkers = [];
       for (const item of items) {
         const entry = item.webkitGetAsEntry?.();
@@ -113,16 +131,153 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
     }
   }
 
+  // ---------- Rename (inline) ----------
+
+  function beginRename(row) {
+    setRenaming({ path: row.path, value: row.name, isDir: row.type === "dir" });
+    // Focus on the next tick (after input renders)
+    setTimeout(() => {
+      const el = renameInputRef.current;
+      if (el) {
+        el.focus();
+        // Select stem only (before extension) for files; full name for dirs
+        const name = row.name;
+        const dot = !row.type || row.type === "dir" ? -1 : name.lastIndexOf(".");
+        if (dot > 0) el.setSelectionRange(0, dot);
+        else el.select();
+      }
+    }, 0);
+  }
+
+  async function commitRename() {
+    const r = renaming;
+    if (!r) return;
+    const trimmed = (r.value || "").trim();
+    if (!trimmed || trimmed === basenameOf(r.path) || /[/\\]/.test(trimmed)) {
+      setRenaming(null);
+      return;
+    }
+    const newPath = (dirnameOf(r.path) ? dirnameOf(r.path) + "/" : "") + trimmed;
+    try {
+      await renameFile(projectId, r.path, newPath);
+      setRenaming(null);
+      onRenamed?.(r.path, newPath, r.isDir);
+      onRefresh?.();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Rename failed");
+      setRenaming(null);
+    }
+  }
+
+  // ---------- Create new file / folder ----------
+
+  async function handleNewFile(parentPath = "") {
+    const name = window.prompt(
+      parentPath ? `New file inside "${parentPath}":` : "New file name:", "untitled.txt",
+    );
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed || /[/\\]/.test(trimmed)) {
+      window.alert("Name cannot contain slashes.");
+      return;
+    }
+    const newPath = (parentPath ? parentPath + "/" : "") + trimmed;
+    try {
+      await writeFile(projectId, newPath, "");
+      onRefresh?.();
+      onOpen?.(newPath);
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Create failed");
+    }
+  }
+
+  async function handleNewFolder(parentPath = "") {
+    const name = window.prompt(
+      parentPath ? `New folder inside "${parentPath}":` : "New folder name:", "new-folder",
+    );
+    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed || /[/\\]/.test(trimmed)) {
+      window.alert("Name cannot contain slashes.");
+      return;
+    }
+    const newPath = (parentPath ? parentPath + "/" : "") + trimmed;
+    try {
+      await mkdir(projectId, newPath);
+      setOpenMap((p) => ({ ...p, [parentPath]: true, [newPath]: true }));
+      onRefresh?.();
+    } catch (e) {
+      window.alert(e?.response?.data?.detail || "Create folder failed");
+    }
+  }
+
+  function copyPath(path) {
+    try {
+      navigator.clipboard?.writeText(path);
+    } catch { /* ignore */ }
+  }
+
+  // ---------- Build context menu items for a row ----------
+
+  function menuItemsFor(row) {
+    const isDir = row.type === "dir";
+    const parent = isDir ? row.path : dirnameOf(row.path);
+    return [
+      isDir
+        ? { label: "Open / Toggle", icon: <FolderOpen size={12} />, onClick: () => toggle(row.path) }
+        : { label: "Open file", icon: <File size={12} />, onClick: () => onOpen?.(row.path) },
+      { divider: true },
+      { label: "New file…", icon: <FilePlus size={12} />, onClick: () => handleNewFile(parent) },
+      { label: "New folder…", icon: <FolderPlus size={12} />, onClick: () => handleNewFolder(parent) },
+      { divider: true },
+      { label: "Rename", icon: <PencilSimple size={12} />, shortcut: "F2", onClick: () => beginRename(row) },
+      { label: "Copy path", icon: <Copy size={12} />, onClick: () => copyPath(row.path) },
+      isDir
+        ? { label: "Download as zip", icon: <Archive size={12} />, onClick: () => handleDownloadZip(row.path) }
+        : { label: "Download", icon: <DownloadSimple size={12} />, onClick: () => handleDownload(row.path) },
+      { divider: true },
+      { label: isDir ? "Delete folder" : "Delete file", icon: <Trash size={12} />,
+        danger: true, onClick: () => handleDelete(row.path) },
+    ];
+  }
+
+  function onRowContextMenu(e, row) {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenu({ x: e.clientX, y: e.clientY, row });
+  }
+
+  function onEmptyContextMenu(e) {
+    e.preventDefault();
+    setMenu({
+      x: e.clientX, y: e.clientY,
+      row: { type: "dir", path: "", name: "(root)" },
+    });
+  }
+
   return (
     <div
       className="flex flex-col h-full relative"
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
+      onContextMenu={onEmptyContextMenu}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b border-cyan/10 gap-1">
         <div className="font-display text-cyan tracking-widest text-[0.65rem]">FILES</div>
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => handleNewFile("")}
+            title="New file"
+            className="text-alloy hover:text-cyan"
+            data-testid="tree-new-file"
+          ><FilePlus size={12} /></button>
+          <button
+            onClick={() => handleNewFolder("")}
+            title="New folder"
+            className="text-alloy hover:text-cyan"
+            data-testid="tree-new-folder"
+          ><FolderPlus size={12} /></button>
           <button
             onClick={() => fileInputRef.current?.click()}
             title="Upload files (zip auto-extracts)"
@@ -135,7 +290,7 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
             title="Upload folder"
             className="text-alloy hover:text-cyan"
             data-testid="tree-upload-folder"
-          ><FolderPlus size={12} /></button>
+          ><Folder size={12} /></button>
           <input
             ref={folderInputRef}
             type="file"
@@ -147,7 +302,7 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
             data-testid="tree-upload-folder-input"
           />
           <button
-            onClick={handleDownloadZip}
+            onClick={() => handleDownloadZip()}
             title="Download project zip"
             className="text-alloy hover:text-cyan"
             data-testid="tree-download-zip"
@@ -173,22 +328,46 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
       <div className="flex-1 overflow-auto scrollbar-thin py-1" data-testid="file-tree">
         {rows.map((row) => {
           const isActive = row.type === "file" && row.path === activePath;
+          const isRenaming = renaming?.path === row.path;
+
           if (row.type === "dir") {
             return (
               <div
                 key={`d:${row.path}`}
                 className="group flex items-center hover:bg-cyan/5"
                 style={{ paddingLeft: 6 + row.depth * 12 }}
+                onContextMenu={(e) => onRowContextMenu(e, row)}
               >
+                {isRenaming ? (
+                  <div className="flex-1 flex items-center gap-1 py-1 text-[0.78rem] text-cyan">
+                    <CaretDown size={10} />
+                    <FolderOpen size={14} className="text-cyan" />
+                    <RenameInput
+                      ref={renameInputRef}
+                      value={renaming.value}
+                      onChange={(v) => setRenaming({ ...renaming, value: v })}
+                      onCommit={commitRename}
+                      onCancel={() => setRenaming(null)}
+                    />
+                  </div>
+                ) : (
+                  <button
+                    data-testid={`tree-dir-${row.path}`}
+                    onClick={() => toggle(row.path)}
+                    onDoubleClick={(e) => { e.preventDefault(); beginRename(row); }}
+                    className="flex-1 flex items-center gap-1 py-1 text-left text-[0.78rem] text-gridwhite/90"
+                  >
+                    {row.isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
+                    {row.isOpen ? <FolderOpen size={14} className="text-cyan" /> : <Folder size={14} className="text-alloy" />}
+                    <span className="font-mono">{row.name}</span>
+                  </button>
+                )}
                 <button
-                  data-testid={`tree-dir-${row.path}`}
-                  onClick={() => toggle(row.path)}
-                  className="flex-1 flex items-center gap-1 py-1 text-left text-[0.78rem] text-gridwhite/90"
-                >
-                  {row.isOpen ? <CaretDown size={10} /> : <CaretRight size={10} />}
-                  {row.isOpen ? <FolderOpen size={14} className="text-cyan" /> : <Folder size={14} className="text-alloy" />}
-                  <span className="font-mono">{row.name}</span>
-                </button>
+                  onClick={(e) => { e.stopPropagation(); beginRename(row); }}
+                  title={`Rename "${row.name}"`}
+                  className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
+                  data-testid={`tree-rename-dir-${row.path}`}
+                ><PencilSimple size={10} /></button>
                 <button
                   onClick={(e) => { e.stopPropagation(); handleDownloadZip(row.path); }}
                   title={`Download "${row.name}" as zip`}
@@ -209,15 +388,36 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
               key={`f:${row.path}`}
               className={`group flex items-center hover:bg-cyan/5 ${isActive ? "bg-cyan/10" : ""}`}
               style={{ paddingLeft: 6 + row.depth * 12 + 12 }}
+              onContextMenu={(e) => onRowContextMenu(e, row)}
             >
+              {isRenaming ? (
+                <div className="flex-1 flex items-center gap-2 py-1 text-[0.78rem] text-cyan">
+                  <File size={12} className="text-cyan" />
+                  <RenameInput
+                    ref={renameInputRef}
+                    value={renaming.value}
+                    onChange={(v) => setRenaming({ ...renaming, value: v })}
+                    onCommit={commitRename}
+                    onCancel={() => setRenaming(null)}
+                  />
+                </div>
+              ) : (
+                <button
+                  data-testid={`tree-file-${row.path}`}
+                  onClick={() => onOpen(row.path)}
+                  onDoubleClick={(e) => { e.preventDefault(); beginRename(row); }}
+                  className={`flex-1 flex items-center gap-2 py-1 text-left text-[0.78rem] ${isActive ? "text-cyan" : "text-gridwhite/80"}`}
+                >
+                  <File size={12} className={isActive ? "text-cyan" : "text-alloy"} />
+                  <span className="font-mono truncate">{row.name}</span>
+                </button>
+              )}
               <button
-                data-testid={`tree-file-${row.path}`}
-                onClick={() => onOpen(row.path)}
-                className={`flex-1 flex items-center gap-2 py-1 text-left text-[0.78rem] ${isActive ? "text-cyan" : "text-gridwhite/80"}`}
-              >
-                <File size={12} className={isActive ? "text-cyan" : "text-alloy"} />
-                <span className="font-mono truncate">{row.name}</span>
-              </button>
+                onClick={() => beginRename(row)}
+                title="Rename"
+                className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
+                data-testid={`tree-rename-${row.path}`}
+              ><PencilSimple size={10} /></button>
               <button
                 onClick={() => handleDownload(row.path)}
                 title="Download"
@@ -234,7 +434,7 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
           );
         })}
         {!rows.length && (
-          <div className="px-3 py-4 text-alloy font-mono text-xs">// empty — drop files here</div>
+          <div className="px-3 py-4 text-alloy font-mono text-xs">// empty — right-click or drop files here</div>
         )}
       </div>
 
@@ -243,9 +443,50 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
           <div className="font-display text-cyan tracking-[0.25em] text-sm">DROP TO INGEST</div>
         </div>
       )}
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          items={
+            menu.row.path === ""
+              ? [
+                  { label: "New file…", icon: <FilePlus size={12} />, onClick: () => handleNewFile("") },
+                  { label: "New folder…", icon: <FolderPlus size={12} />, onClick: () => handleNewFolder("") },
+                  { divider: true },
+                  { label: "Upload files…", icon: <Upload size={12} />, onClick: () => fileInputRef.current?.click() },
+                  { label: "Refresh tree", icon: <ArrowsClockwise size={12} />, onClick: () => onRefresh?.() },
+                ]
+              : menuItemsFor(menu.row)
+          }
+          testid="file-context-menu"
+        />
+      )}
     </div>
   );
 }
+
+// Inline rename input — handles Enter / Escape / blur
+const RenameInput = forwardRef(function RenameInput(
+  { value, onChange, onCommit, onCancel }, ref,
+) {
+  return (
+    <input
+      ref={ref}
+      type="text"
+      value={value}
+      data-testid="tree-rename-input"
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") { e.preventDefault(); onCommit(); }
+        else if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+      }}
+      onBlur={onCommit}
+      className="flex-1 bg-midnight border border-cyan/60 px-1 py-0 font-mono text-[0.78rem] text-cyan focus:outline-none focus:border-cyan"
+    />
+  );
+});
 
 function walkEntry(entry, prefix, files, paths) {
   return new Promise((resolve) => {

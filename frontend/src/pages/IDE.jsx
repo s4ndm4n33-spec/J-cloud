@@ -211,6 +211,23 @@ export default function IDE() {
                 onRefresh={refreshTree}
                 activePath={activeTab}
                 projectId={activeProject?.project_id}
+                onRenamed={(oldPath, newPath, isDir) => {
+                  // Update any open tabs whose paths match (or are inside a renamed folder)
+                  setTabs((prev) => prev.map((t) => {
+                    if (t.path === oldPath) return { ...t, path: newPath };
+                    if (isDir && t.path.startsWith(oldPath + "/")) {
+                      return { ...t, path: newPath + t.path.slice(oldPath.length) };
+                    }
+                    return t;
+                  }));
+                  setActiveTab((cur) => {
+                    if (cur === oldPath) return newPath;
+                    if (isDir && cur && cur.startsWith(oldPath + "/")) {
+                      return newPath + cur.slice(oldPath.length);
+                    }
+                    return cur;
+                  });
+                }}
               />
             )}
             {leftView === "git" && activeProject && (

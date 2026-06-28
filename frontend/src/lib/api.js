@@ -61,6 +61,12 @@ export async function writeFile(project_id, path, content) {
 export async function deleteFile(project_id, path) {
   return (await client.delete(`/projects/${project_id}/file`, { params: { path } })).data;
 }
+export async function renameFile(project_id, old_path, new_path) {
+  return (await client.post(`/projects/${project_id}/file/rename`, { old_path, new_path })).data;
+}
+export async function mkdir(project_id, path) {
+  return (await client.post(`/projects/${project_id}/mkdir`, { path })).data;
+}
 export async function deleteProject(project_id) {
   return (await client.delete(`/projects/${project_id}`)).data;
 }

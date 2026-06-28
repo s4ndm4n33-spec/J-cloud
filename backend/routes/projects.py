@@ -106,6 +106,44 @@ async def delete_file(project_id: str, path: str, user: dict = Depends(get_curre
     return {"ok": True}
 
 
+@router.post("/projects/{project_id}/file/rename")
+async def rename_file(project_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    """Rename or move a file/folder within the workspace.
+
+    Accepts {old_path, new_path}. Both are project-relative.
+    """
+    base = project_path(user["user_id"], project_id)
+    old = (payload.get("old_path") or "").strip()
+    new = (payload.get("new_path") or "").strip()
+    if not old or not new:
+        raise HTTPException(status_code=400, detail="old_path and new_path required")
+    if old == new:
+        return {"ok": True, "path": new, "unchanged": True}
+    src = safe_join(base, old)
+    dst = safe_join(base, new)
+    if not src.exists():
+        raise HTTPException(status_code=404, detail=f"Source not found: {old}")
+    if dst.exists():
+        raise HTTPException(status_code=409, detail=f"Destination already exists: {new}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    src.rename(dst)
+    return {"ok": True, "from": old, "to": new, "is_dir": dst.is_dir()}
+
+
+@router.post("/projects/{project_id}/mkdir")
+async def mkdir(project_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    """Create a new empty folder inside the workspace."""
+    base = project_path(user["user_id"], project_id)
+    path = (payload.get("path") or "").strip()
+    if not path:
+        raise HTTPException(status_code=400, detail="path required")
+    target = safe_join(base, path)
+    if target.exists():
+        raise HTTPException(status_code=409, detail=f"Already exists: {path}")
+    target.mkdir(parents=True, exist_ok=False)
+    return {"ok": True, "path": path}
+
+
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
     """Permanently delete a project: workspace directory + projects doc.
