@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from "react-resizable-panels";
 import { useAuth } from "@/context/AuthContext";
 import {
@@ -157,6 +157,32 @@ export default function IDE() {
 
   const activeTabObj = tabs.find((t) => t.path === activeTab);
 
+  // Collect every .html file from the tree (recursive flatten) for the Live Preview selector
+  const htmlFiles = useMemo(() => {
+    const out = [];
+    const walk = (nodes) => {
+      for (const n of nodes) {
+        if (n.type === "dir" && n.children) walk(n.children);
+        else if (n.type === "file" && /\.html?$/i.test(n.name)) out.push(n.path);
+      }
+    };
+    walk(tree);
+    return out;
+  }, [tree]);
+
+  // The path passed to LivePreview when it opens: the active tab if it's HTML,
+  // explicit override via `previewPath`, else null (preview decides default).
+  const [previewPath, setPreviewPath] = useState(null);
+  const initialPreviewPath = previewPath
+    || (activeTabObj && /\.html?$/i.test(activeTabObj.path) ? activeTabObj.path : null);
+
+  // Opening preview via right-click "Open in Preview": set explicit path + open.
+  const openPreviewWithPath = useCallback((path) => {
+    setPreviewPath(path);
+    setPreviewOpen(true);
+  }, []);
+
+
   return (
     <div className="h-screen w-screen flex flex-col bg-midnight text-gridwhite overflow-hidden">
       <TopBar
@@ -211,6 +237,7 @@ export default function IDE() {
                 onRefresh={refreshTree}
                 activePath={activeTab}
                 projectId={activeProject?.project_id}
+                onPreviewHtml={(p) => { openPreviewWithPath(p); if (isMobile) setMobileDrawer(null); }}
                 onRenamed={(oldPath, newPath, isDir) => {
                   // Update any open tabs whose paths match (or are inside a renamed folder)
                   setTabs((prev) => prev.map((t) => {
@@ -365,8 +392,9 @@ export default function IDE() {
               {previewOpen && activeProject && (
                 <LivePreview
                   projectId={activeProject.project_id}
-                  onClose={() => setPreviewOpen(false)}
-                  backendUrl={process.env.REACT_APP_BACKEND_URL}
+                  onClose={() => { setPreviewOpen(false); setPreviewPath(null); }}
+                  htmlFiles={htmlFiles}
+                  initialPath={initialPreviewPath}
                 />
               )}
             </div>
@@ -441,8 +469,9 @@ export default function IDE() {
             {previewOpen && activeProject && (
               <LivePreview
                 projectId={activeProject.project_id}
-                onClose={() => setPreviewOpen(false)}
-                backendUrl={process.env.REACT_APP_BACKEND_URL}
+                onClose={() => { setPreviewOpen(false); setPreviewPath(null); }}
+                htmlFiles={htmlFiles}
+                initialPath={initialPreviewPath}
               />
             )}
           </div>

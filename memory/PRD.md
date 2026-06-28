@@ -59,6 +59,13 @@
 See `/app/memory/test_credentials.md`.
 
 ## Recently implemented (latest first)
+- **File tree right-click context menu + rename + multi-HTML preview (2026-06-28)**:
+  - **New backend endpoints**: `POST /api/projects/{id}/file/rename` (path-traversal-safe move, 404 missing source, 409 destination exists) and `POST /api/projects/{id}/mkdir` (creates empty folders inside the workspace).
+  - **New `ContextMenu.jsx`** — portal-free, viewport-clamped, Esc + outside-click dismiss. Right-click any file/folder in the tree to get: Open · New file… · New folder… · Rename (F2) · Copy path · Download · Delete. Right-click on empty area gives root-level shortcuts.
+  - **Inline rename**: double-click a row to enter rename mode. Stem auto-selected before the extension. Enter commits, Esc/blur cancels. Open tabs auto-update their path when a file (or its parent folder) is renamed.
+  - **Hover toolbar**: every row now exposes Rename (pencil), Download/Archive, and Delete (trash) icons on hover. HTML files additionally expose an Eye icon → opens Live Preview pointed at that exact file.
+  - **Live Preview rewritten**: no longer hard-codes `index.html`. Header now has a `// path/to/file.html ⌄` dropdown listing every `.html` file in the tree (recursive walk; `index.html` sorted first). Selection priority on open: explicit override (from right-click "Open in preview") → active editor tab if it's HTML → `index.html` → first HTML found. Shows a friendly empty-state when the project has zero HTML files. Errors caught + displayed inline.
+  - 90/90 backend pytest pass; lint clean.
 - **Backend refactor (2026-06-26)**: split monolithic `server.py` (2,314 lines) into focused modules — `server.py` now 77 lines (app shell only). Shared helpers in `deps.py` (db client, auth, project paths, override), `llm_chain.py` (TASK_CHAINS, BYOK resolver, Ollama caller, chain orchestrator with private-mode filter + telemetry), `chronicle_helpers.py` (session_start + narrative writer). Route modules per concern under `/app/backend/routes/`: `auth.py` (93), `projects.py` (141), `gauntlet.py` (62), `terminal.py` (173, includes WS PTY), `git_local.py` (63), `settings.py` (175), `chronicle.py` (190), `ai.py` (443 — chat/refine/governance/agent/telemetry/chain), `github.py` (211), `audit.py` (93), `uploads.py` (190), `agents.py` (55). 90/90 backend pytest pass post-refactor. API surface unchanged. Frontend smoke test confirms sign-in renders.
 - **Chat persistence + END SESSION + email transcripts (2026-06-26)**:
   - Chat state lifted from `ChatTab` into `AICoworker` parent. The chat sub-tree stays mounted (hidden via CSS `hidden` class) when other AI tabs are active, so the conversation, scroll position, and textarea content survive tab switches. ONLY explicit END SESSION clears it.
@@ -87,16 +94,18 @@ See `/app/memory/test_credentials.md`.
 
 ## Backlog / P1
 - Multi-cursor inline-diff editor for InlineEditModal output (currently full-block replace).
-- File rename / drag-and-drop in tree.
+- ~~File rename / drag-and-drop in tree.~~ ✅ Rename done 2026-06-28. Drag-and-drop still open.
 - Git: branch creation/switch UI, push to remote (PAT works; full OAuth pending user credentials).
+- J `propose_chronicle_entry` tool (mid-session J-suggested chronicle entries — Phase 2).
 - Per-master deterministic auto-fix (port the 8 AST transforms from upstream `app/agent/transforms.py`).
 - Workspace persistence beyond preview pod lifetime (MongoDB GridFS or S3-compatible storage).
 
 ## P2
 - Terminal: PTY-backed streaming session via WebSocket (currently request-response).
-- Live Preview: dev-server proxy for SPA projects.
+- Live Preview: dev-server proxy for SPA projects + relative-asset support via `<base>` injection.
 - Five Masters language pack: native AST analyzers for JS/TS/Rust/Go.
 - ~~Refactor: split `server.py` into `/app/backend/routes/*`.~~ ✅ Done 2026-06-26.
+- ~~Floating-mosaic layout (`react-mosaic-component`).~~ Shelved 2026-06-28 — current resizable layout judged sufficient.
 
 ## Next Action Items
 1. Push fixes live: hit **Deploy** to roll the mobile-OAuth fix + Ollama support + Tutorial out to blue-j-gauntlet.com.

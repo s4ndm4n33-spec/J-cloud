@@ -2,7 +2,7 @@ import { useState, useMemo, useRef, forwardRef } from "react";
 import {
   File, Folder, FolderOpen, ArrowsClockwise, CaretDown, CaretRight,
   Upload, DownloadSimple, Archive, FolderPlus, Trash, PencilSimple,
-  FilePlus, Copy,
+  FilePlus, Copy, Eye,
 } from "@phosphor-icons/react";
 import {
   uploadZip, uploadFolder, downloadUrl, downloadProjectZip,
@@ -32,7 +32,7 @@ function basenameOf(path) {
   return i < 0 ? path : path.slice(i + 1);
 }
 
-export default function FileTree({ tree, onOpen, onRefresh, activePath, projectId, onRenamed }) {
+export default function FileTree({ tree, onOpen, onRefresh, activePath, projectId, onRenamed, onPreviewHtml }) {
   const [openMap, setOpenMap] = useState({});
   const fileInputRef = useRef(null);
   const folderInputRef = useRef(null);
@@ -222,10 +222,19 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
   function menuItemsFor(row) {
     const isDir = row.type === "dir";
     const parent = isDir ? row.path : dirnameOf(row.path);
-    return [
+    const isHtml = !isDir && /\.html?$/i.test(row.name);
+    const items = [
       isDir
         ? { label: "Open / Toggle", icon: <FolderOpen size={12} />, onClick: () => toggle(row.path) }
         : { label: "Open file", icon: <File size={12} />, onClick: () => onOpen?.(row.path) },
+    ];
+    if (isHtml && onPreviewHtml) {
+      items.push({
+        label: "Open in preview", icon: <Eye size={12} />,
+        onClick: () => onPreviewHtml(row.path),
+      });
+    }
+    items.push(
       { divider: true },
       { label: "New file…", icon: <FilePlus size={12} />, onClick: () => handleNewFile(parent) },
       { label: "New folder…", icon: <FolderPlus size={12} />, onClick: () => handleNewFolder(parent) },
@@ -238,7 +247,8 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
       { divider: true },
       { label: isDir ? "Delete folder" : "Delete file", icon: <Trash size={12} />,
         danger: true, onClick: () => handleDelete(row.path) },
-    ];
+    );
+    return items;
   }
 
   function onRowContextMenu(e, row) {
@@ -418,6 +428,14 @@ export default function FileTree({ tree, onOpen, onRefresh, activePath, projectI
                 className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
                 data-testid={`tree-rename-${row.path}`}
               ><PencilSimple size={10} /></button>
+              {/\.html?$/i.test(row.name) && onPreviewHtml && (
+                <button
+                  onClick={() => onPreviewHtml(row.path)}
+                  title="Open in Live Preview"
+                  className="text-alloy hover:text-cyan px-1.5 opacity-0 group-hover:opacity-100"
+                  data-testid={`tree-preview-${row.path}`}
+                ><Eye size={10} /></button>
+              )}
               <button
                 onClick={() => handleDownload(row.path)}
                 title="Download"
