@@ -59,6 +59,60 @@ async def _resolve_github_token(user_id: str) -> Optional[str]:
     return None
 
 
+# --- Auto-verify gate --------------------------------------------------------
+# If J mutated code this turn, `done` cannot be honored until J has actually
+# run a verification command. Returns an error string if the gate should
+# reject the done call, or None if it's fine to proceed.
+#
+# Rules:
+#   - Any write_file / append_file / create_file / delete_file / move_file
+#     with a .py/.js/.jsx/.ts/.tsx path counts as "code mutated".
+#   - A "verification command" is a run_command whose command line contains
+#     pytest / unittest / yarn test / npm test / jest / tsc / mypy / pyright /
+#     ruff / eslint. Doesn't matter if it passed — J just has to have HIT the
+#     check. If verification FAILED, J was supposed to fix and re-run, but
+#     that's J's judgement, not the gate's.
+#   - If J only mutated non-code files (.md, .txt, .json, .yaml, config etc.)
+#     the gate stands down.
+_CODE_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+_VERIFY_TOKENS = (
+    "pytest", "unittest", "yarn test", "npm test", "npm run test",
+    "jest", "tsc", "mypy", "pyright", "ruff", "eslint",
+)
+
+
+def _check_verification_required(steps: list[dict]) -> Optional[str]:
+    code_touched = False
+    verified = False
+    for s in steps:
+        if s.get("type") != "tool":
+            continue
+        name = s.get("name")
+        args = s.get("args") or {}
+        res = s.get("result") or {}
+        if name in {"write_file", "append_file", "create_file", "delete_file", "move_file"}:
+            if res.get("error"):
+                continue  # a rejected write doesn't count as "code mutated"
+            path = str(args.get("path") or args.get("to") or "").lower()
+            if any(path.endswith(ext) for ext in _CODE_SUFFIXES):
+                code_touched = True
+        elif name == "run_command":
+            cmd = str(args.get("command") or "").lower()
+            if any(tok in cmd for tok in _VERIFY_TOKENS):
+                verified = True
+    if code_touched and not verified:
+        return (
+            "AUTO_VERIFY_HALT: You mutated code this turn but never ran a "
+            "verification command. Before calling `done`, run one of: pytest, "
+            "yarn test, npm test, tsc --noEmit, mypy, ruff, or eslint — "
+            "whichever fits the languages you touched. If tests fail, fix "
+            "and re-run. Only THEN call done. This is a deterministic gate — "
+            "arguing with it wastes tokens."
+        )
+    return None
+# ----------------------------------------------------------------------------
+
+
 @router.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
     """Gemini-first chat with BYOK failover chain."""
@@ -404,6 +458,22 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
             transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{json.dumps(result)[:1500]}")
 
             if result.get("_done"):
+                # Verification gate: J cannot claim done if he touched code
+                # this session and never ran a test / typecheck. This raises
+                # the floor from "hopefully works" to "provably ran the check."
+                verify_err = _check_verification_required(steps)
+                if verify_err:
+                    # Rewrite the tool result into a synthetic error so J is
+                    # forced to run tests before trying `done` again.
+                    result.pop("_done", None)
+                    result["error"] = verify_err
+                    # Repair the last tool step so the transcript reflects the
+                    # rejection (both for J's next-turn context and audit).
+                    steps[-1]["result"] = result
+                    transcript_for_llm[-1] = (
+                        f"[TOOL RESULT — done]\n" + json.dumps(result)[:1500]
+                    )
+                    continue
                 is_done = True
                 final_summary = result.get("summary", "")
                 done_reason = "done_tool"

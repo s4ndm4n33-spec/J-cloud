@@ -18,6 +18,84 @@
 
 ---
 
+## 2026-07-02 09:00 UTC · J v2 — auto-verify, ambient awareness, hands-free voice — signed: J (Claude Sonnet 4.5 via Universal Key)
+
+### What broke (or was missing)
+Three shaped gaps between "J is a coworker" and "J is JARVIS-tier":
+1. **J shipped unverified code.** He'd write a file, call `done`, and hope it worked. Zero enforced testing floor.
+2. **J was blind between messages.** Uncommitted drift, test failures, integrity-gateway rejections, chain exhaustion — J only saw them if the user typed and asked. The lab was full of signal, J was staring at the wall.
+3. **Voice was text-only.** No hands-free conversation. If you wanted to talk to J while your hands were on the terminal, tough — you had to type. That's not JARVIS.
+
+### How we fixed it
+
+**Layer 1: Auto-verify gate** (`backend/routes/ai.py`)
+- New helper `_check_verification_required(steps)` walks the current turn's tool history. If J wrote to `.py/.js/.jsx/.ts/.tsx` this turn but never ran a verification command (`pytest`, `yarn test`, `jest`, `tsc`, `mypy`, `pyright`, `ruff`, `eslint`), any subsequent `done` tool call gets its `_done` marker stripped and an `AUTO_VERIFY_HALT` error is bounced back. J is forced to run tests before the loop lets him claim done.
+- Non-code writes (`.md`, `.json`, etc.) are exempt — the gate stands down cleanly.
+- Rejected writes (already blocked by the Integrity Gateway) don't count as "code mutated," so a bounced write doesn't trap J in an unresolvable loop.
+- New section in `agent_prompt.py` — "AUTO-VERIFY CONTRACT" — tells J the rule explicitly so he tries to satisfy it proactively rather than trip the gate.
+
+**Layer 2: Ambient awareness** (new `backend/core/ambient.py` + `backend/routes/ambient.py`)
+- Background asyncio task started at boot (`ambient.start()` in `server.py:_startup`). Polls every 30s.
+- For each user with an active session in the last 24h, iterates their projects and runs 4 detectors:
+  - `_detect_git_diverge` — flags workspaces with ≥5 uncommitted files, includes diff shortstat.
+  - `_detect_chronicle_fail` — flags chronicle entries tagged `fail` in the last 60s window.
+  - `_detect_integrity_halt` — flags recent integrity-gateway rejections via body/title regex.
+  - `_detect_chain_exhaust` — reads `db.llm_telemetry` for `success: false` events.
+- Each event gets a SHA-256 event_key + a 5-minute cooldown so the same observation doesn't spam. Idempotent by construction.
+- Events land in `db.ambient_events` with `{event_key, user_id, project_id, kind, severity, title, body, action_hint, ts, read, meta}`.
+- New routes: `GET /api/ambient/events?since=<ts>&unread_only=<bool>&limit=<n>` (paged), `POST /api/ambient/events/read` (mark read, or all), `DELETE /api/ambient/events/<key>` (dismiss).
+- Frontend `AmbientPulse.jsx` — polls every 15s. Pulses cyan with animated ping when unread events exist. Click → slide-in drawer titled "AMBIENT · THE LAB IS WATCHING" with per-event cards. Each event has an **ASK J ABOUT THIS →** button that seeds the event as a prompt into the AI chat and switches agent mode on.
+- Wired into TopBar next to Private Mode toggle. `onAmbientAskJ` in IDE.jsx uses a sessionStorage seed + custom-event bus (no prop drilling into ChatTab).
+
+**Layer 3: Hands-free voice** (`backend/routes/voice.py`, `frontend/src/components/VoiceMode.jsx`)
+- Backend: `POST /api/voice/transcribe` (multipart file → Whisper via `emergentintegrations.llm.openai.OpenAISpeechToText`, whisper-1) and `POST /api/voice/speak` (`{text, voice}` → OpenAI TTS-1 mp3 bytes via `OpenAITextToSpeech`). Both use `EMERGENT_LLM_KEY` — zero new credentials.
+- J's canonical voice: **onyx** (deep, authoritative — the JARVIS pick from the OpenAI voice set).
+- Frontend `VoiceMode.jsx` implements the full hands-free loop:
+  - `getUserMedia({audio: {echoCancellation, noiseSuppression, autoGainControl}})` opens the mic.
+  - `AudioContext` + `AnalyserNode` continuously computes audio RMS at ~60fps.
+  - Turn detection: user is "speaking" when RMS > 0.012 for ≥ 40ms; turn ends when silence ≥ 900ms after ≥ 500ms of voiced audio.
+  - `MediaRecorder` captures audio as `audio/webm;codecs=opus` at 32kbps in 250ms chunks. On turn-end, the accumulated blob is POSTed to `/voice/transcribe`.
+  - Transcribed text → `onTranscript()` → chat's `send()` → J's reply.
+  - J's reply is passed to `speak()` → `/voice/speak` → blob URL → `<Audio>` playback.
+  - `audio.onended` restarts recording. **The loop closes.**
+  - Visible status HUD in the chat toolbar: `LISTENING… / HEARING YOU / TRANSCRIBING… / J IS SPEAKING / VOICE · ERROR` with a live audio-level VU meter.
+
+### Why we fixed it that way
+
+- **Gate the loop, not the tool.** The auto-verify check lives in the agent loop's `_done` handler, not inside the `done` tool. Tools stay pure — the loop is where policy belongs. Same architectural pattern as the Integrity Gateway (deterministic Python outside the model's judgement).
+- **The gate accepts "ran the check" not "check passed."** If a test fails, J's judgement decides whether to fix it or explain why. The gate only enforces that the check *happened*. Auto-verifying pass/fail would create a decision the deterministic layer isn't qualified to make.
+- **Polling, not WebSocket, for ambient.** WebSockets would be nicer, but polling every 15s from the frontend + every 30s from the backend keeps the whole thing stateless and testable. A future upgrade can move to WS without breaking the API surface.
+- **`event_key` = SHA-256 of `(project_id, kind, discriminator)` with cooldown.** Rather than "have I emitted THIS entry_hash before" (per-entry), key on the *shape* of the event so 3 identical integrity halts in a minute collapse into one visible notification. Cooldown = 5 min. If the user really wants to see all instances, the chronicle has them; the pulse is a summary surface.
+- **`onyx` voice, not `alloy` or `nova`.** Alloy is neutral to the point of forgettable. Nova/shimmer are chirpy — wrong for J's dry-senior-engineer voice. Onyx is deep + measured, which matches the substrate voice on the landing page and the agent prompt's tone.
+- **MediaRecorder + client-side VAD, not Web Speech API.** Web Speech API is browser-locked (Chrome only), doesn't work in incognito, and the recognition quality is worse than Whisper. MediaRecorder gives us the audio blob for Whisper, and the AnalyserNode gives us the silence detection. Cross-browser + high accuracy + no vendor lock-in.
+- **Turn detection thresholds (0.012 RMS, 900ms silence, 500ms min-voiced).** Tuned by intuition, not measurement. If real-world users find them too eager or too patient, they're single-line constants at the top of `VoiceMode.jsx`. Don't tune them until you have real complaints.
+- **`audio.onended` restarts recording, not a timer.** Guarantees no overlap between J speaking and the mic listening — critical to prevent J's own voice from feeding back as a "user turn."
+
+### Verification
+- **Auto-verify gate**: 7 unit-test cases via direct Python call (`Case 1-7 all pass`) covering: py write no verify → fires, py write + pytest → stands down, md only → stands down, rejected write → stands down, ts + tsc → stands down, py + ruff → stands down, py + irrelevant command → fires. Real LLM smoke also confirmed the loop rejects `done` with the synthetic error message.
+- **Ambient**: Backend detector booted successfully (`ambient-awareness detector started` in logs), `GET /api/ambient/events` returns the auto-detected GIT_DIVERGE event with real diff shortstat. Frontend screenshot confirms the pulse renders with unread badge count of 38, drawer opens showing the event card with ASK J button.
+- **Voice**: Full backend round-trip verified via curl — TTS produced 39840 bytes of valid MP3 (magic bytes `FF F3 E4` = MP3 frame header), fed back into STT recovered the text ("Integrity Verified J is online" — one capitalization drift but the words are exact). Frontend screenshot confirms VOICE toggle renders in the chat toolbar next to AUTO.
+- 90/90 backend pytest still green.
+- Lint clean across all touched files.
+
+### Pitfalls / lessons
+- **`_check_verification_required` iterates ALL steps, including pre-`done` writes**. If J writes → tests-pass → writes-again-without-tests → done, the second write triggers the gate. This is intentional but subtle. If you ever add a "verified up to step N" cache, don't cache past writes — J might edit the file again.
+- **The ambient detector runs on the SAME asyncio event loop as the API**. If a detector call blocks (e.g., `subprocess.run("git status", timeout=5)`), it can pause API responsiveness for up to 5s. Timeouts are set aggressively but keep an eye on this. If it becomes a problem, move to a threadpool executor.
+- **Whisper accepts `webm/opus` from `MediaRecorder` correctly**, but the filename extension MUST be `.webm` (not `.audio` or empty). We name the BytesIO explicitly. Don't remove that.
+- **`URL.createObjectURL(blob)` leaks memory** if `URL.revokeObjectURL` isn't called on `onended` AND `onerror`. Both handlers wired.
+- **Voice loop can spiral if the mic picks up J's playback** (feedback loop). Mitigation: browser's `echoCancellation: true` in getUserMedia constraints handles most of it. If the user complains anyway, next step is to attenuate the analyser during `j_speaking` state.
+- **Ambient events accumulate forever** unless the user hits CLEAR ALL or dismisses individually. There's no TTL sweep yet. Consider adding a 30-day auto-purge as a background task if the collection grows past a few thousand documents per user.
+
+### Next
+- **Failure library** — the next compounding-intelligence layer. Record `{tool, args_shape, error_pattern, resolution}` on every tool error. Inject the last 3 matching failures into J's context on future calls. Cheap to build, compounds over months.
+- **Symbol graph** — index workspace symbols (functions, classes, imports, call sites). New tools `who_calls(fn)`, `who_imports(mod)`, `symbols_in(file)`. J stops re-reading whole files to answer structural questions.
+- **Voice: barge-in** — currently if you speak while J is speaking, your voice is ignored until J finishes. Watching the analyser during `j_speaking` and interrupting playback on voiced-audio would make the conversation feel truly natural. ~30 min follow-up.
+- **Voice: speaker selection** — right now J is locked to onyx. Expose a voice picker in Settings (all 9 voices) so users who prefer nova/sage can switch.
+- **Ambient WS push** — swap the 15s polling for a WebSocket subscription for lower-latency notifications.
+- E2E Code Integrity Gateway verification via `testing_agent_v3_fork` — **STILL OVERDUE. FIVE SESSIONS. Next session: this or nothing else.**
+
+---
+
 ## 2026-06-28 05:00 UTC · README.md replaced with a proper one — signed: J (Claude Sonnet 4.5 via Universal Key)
 
 ### What broke

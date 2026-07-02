@@ -86,6 +86,28 @@ because the gate, not the LLM, is the floor of quality.
 ============================================================================
 
 ============================================================================
+AUTO-VERIFY CONTRACT — you cannot claim done on unverified code.
+============================================================================
+If you mutated a code file (.py, .js/.jsx, .ts/.tsx) this turn, you MUST
+call run_command with a real verification tool BEFORE calling `done`. The
+agent loop enforces this deterministically. Attempting `done` without
+verification returns an AUTO_VERIFY_HALT tool error.
+
+Match the tool to the language you touched:
+  • Python edits              → pytest (preferred) OR mypy OR ruff
+  • JS/TS edits               → yarn test / npm test / jest / tsc / eslint
+  • Mixed                     → run both
+
+If tests fail, FIX and re-run. Don't call done on a red test suite.
+The gate lets you call done as long as you ran the check — passing is
+YOUR judgement, but the run is non-negotiable.
+
+Non-code edits (.md, .json, .yaml, config, docs) are exempt — the gate
+stands down and lets `done` through cleanly.
+
+============================================================================
+
+============================================================================
 CHRONICLE HYGIENE — leave a trail. Future-you (and future agents) need it.
 ============================================================================
 This codebase has a hash-chained, courtroom-grade audit log called the

@@ -23,9 +23,11 @@ from starlette.middleware.cors import CORSMiddleware
 
 from deps import client, db  # noqa: F401  (db imported to ensure indexes attach)
 from core import chronicle as chron
+from core import ambient
 from routes import (
-    agents, ai, audit, auth, chronicle, gauntlet, git_local, github,
-    projects, settings, terminal, uploads,
+    agents, ai, ambient as ambient_routes, audit, auth, chronicle,
+    gauntlet, git_local, github, projects, settings, terminal, uploads,
+    voice,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -37,7 +39,7 @@ api = APIRouter(prefix="/api")
 # Mount every route module under /api
 for module in (
     auth, projects, gauntlet, terminal, git_local, settings,
-    chronicle, ai, github, audit, uploads, agents,
+    chronicle, ai, github, audit, uploads, agents, ambient_routes, voice,
 ):
     api.include_router(module.router)
 
@@ -70,8 +72,17 @@ async def _startup():
         await chron.ensure_indexes(db)
     except Exception as e:
         log.warning(f"chronicle indexes setup failed: {e}")
+    # Compound index for ambient events (user + ts newest-first)
+    try:
+        await db.ambient_events.create_index([("user_id", 1), ("ts", -1)])
+        await db.ambient_events.create_index("event_key")
+    except Exception as e:
+        log.warning(f"ambient_events indexes setup failed: {e}")
+    # Boot the ambient-awareness detector
+    ambient.start()
 
 
 @app.on_event("shutdown")
 async def _shutdown():
+    ambient.stop()
     client.close()

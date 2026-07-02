@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash } from "@phosphor-icons/react";
+import AmbientPulse from "@/components/AmbientPulse";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
 import { getPrivateMode, setPrivateMode, deleteProject } from "@/lib/api";
@@ -10,7 +11,7 @@ const LOGO_URL =
 export default function TopBar({
   user, projects, activeProject, onProjectChange, onNewProject,
   gauntletStatus, previewOpen, onTogglePreview, onOpenTutorial,
-  onProjectDeleted,
+  onProjectDeleted, onAmbientAskJ,
 }) {
   const { signOut } = useAuth();
   const [creating, setCreating] = useState(false);
@@ -186,6 +187,9 @@ export default function TopBar({
           {pmError}
         </div>
       )}
+
+      {/* JARVIS heartbeat pulse */}
+      <AmbientPulse onAskJ={onAmbientAskJ} />
 
       <button
         data-testid="toggle-preview"

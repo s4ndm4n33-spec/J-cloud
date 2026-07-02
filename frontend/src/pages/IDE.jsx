@@ -223,6 +223,16 @@ export default function IDE() {
             return next;
           });
         }}
+        onAmbientAskJ={(evt) => {
+          // Inject the ambient event as a pending user prompt in the chat.
+          // Uses a session-scoped storage bucket that AICoworker picks up.
+          try {
+            const seed = `[from ambient watch · ${evt.kind}]\n${evt.title}\n\n${evt.body}\n\n${evt.action_hint || ""}`;
+            sessionStorage.setItem("gauntlet_chat_seed", seed);
+            // Notify AICoworker via a custom event (no prop drilling needed)
+            window.dispatchEvent(new CustomEvent("gauntlet-chat-seed"));
+          } catch { /* ignore */ }
+        }}
       />
 
       {(() => {

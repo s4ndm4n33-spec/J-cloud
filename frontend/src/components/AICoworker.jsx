@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone } from "@phosphor-icons/react";
 import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
+import VoiceMode from "@/components/VoiceMode";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
@@ -112,9 +113,32 @@ function ChatTab({
     try { localStorage.setItem("gauntlet_auto_mode", autoMode ? "1" : "0"); } catch { /* ignore */ }
   }, [autoMode]);
 
+  // Hands-free voice loop state
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceReply, setVoiceReply] = useState(null); // text J should speak next
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
+
+  // Listen for ambient-seeded prompts (from the JARVIS pulse drawer)
+  useEffect(() => {
+    function pullSeed() {
+      try {
+        const seed = sessionStorage.getItem("gauntlet_chat_seed");
+        if (seed) {
+          sessionStorage.removeItem("gauntlet_chat_seed");
+          setInput((prev) => (prev ? `${prev}\n\n${seed}` : seed));
+          // Ensure agent mode is on — ambient events typically want action
+          setAgentMode(true);
+        }
+      } catch { /* ignore */ }
+    }
+    pullSeed(); // in case one was set before this mount
+    window.addEventListener("gauntlet-chat-seed", pullSeed);
+    return () => window.removeEventListener("gauntlet-chat-seed", pullSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const hasUserActivity = messages.some((m) => m.role === "user");
 
@@ -149,17 +173,18 @@ function ChatTab({
     } finally { setEnding(false); }
   }
 
-  async function send() {
-    if (!input.trim() || busy) return;
-    const text = input.trim();
-    setInput("");
+  async function send(explicitText = null) {
+    const raw = explicitText != null ? explicitText : input;
+    if (!raw?.trim() || busy) return null;
+    const text = raw.trim();
+    if (explicitText == null) setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
     try {
       if (agentMode) {
         if (!project) {
           setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
-          return;
+          return null;
         }
         const r = await aiAgent({
           project_id: project.project_id,
@@ -170,6 +195,7 @@ function ChatTab({
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
         onAICall?.();
+        return r.final || "";
       } else {
         const treeSummary = truncateTree(tree || []).join("\n");
         const r = await aiChat({
@@ -183,9 +209,12 @@ function ChatTab({
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
         onAICall?.();
+        return r.reply || "";
       }
     } catch (e) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `// LLM error: ${e?.response?.data?.detail || e.message}` }]);
+      const err = `// LLM error: ${e?.response?.data?.detail || e.message}`;
+      setMessages((prev) => [...prev, { role: "assistant", content: err }]);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -226,6 +255,32 @@ function ChatTab({
           >
             {autoMode ? "// AUTO · ON" : "// AUTO · OFF"}
           </button>
+        )}
+        <button
+          data-testid="voice-mode-toggle"
+          onClick={() => setVoiceOn((v) => !v)}
+          title={voiceOn
+            ? "HANDS-FREE ON — J listens for you continuously and speaks back. Click to disable."
+            : "Enable hands-free voice conversation with J. Uses your microphone."}
+          className={`flex items-center gap-1 px-2 py-0.5 font-mono text-[0.65rem] tracking-wider transition-colors ${
+            voiceOn
+              ? "text-midnight bg-cyan hover:bg-cyan/80"
+              : "text-alloy border border-alloy/40 hover:text-cyan hover:border-cyan"
+          }`}
+        >
+          <Microphone size={11} weight={voiceOn ? "fill" : "regular"} />
+          {voiceOn ? "VOICE · ON" : "VOICE"}
+        </button>
+        {voiceOn && (
+          <VoiceMode
+            enabled={voiceOn}
+            onEnable={setVoiceOn}
+            speakingText={voiceReply}
+            onTranscript={async (text) => {
+              const reply = await send(text);
+              if (reply) setVoiceReply(reply);
+            }}
+          />
         )}
         <button
           data-testid="end-session-button"

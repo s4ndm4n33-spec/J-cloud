@@ -245,6 +245,21 @@ export async function readChronicleSnapshot(project_id, path) {
   return (await client.get(`/projects/${project_id}/chronicle/snapshot`,
                             { params: { path } })).data;
 }
+export async function listAmbientEvents({ since = null, limit = 30, unread_only = false } = {}) {
+  const params = { limit };
+  if (since) params.since = since;
+  if (unread_only) params.unread_only = true;
+  return (await client.get("/ambient/events", { params })).data;
+}
+export async function markAmbientRead(event_keys) {
+  return (await client.post("/ambient/events/read", { event_keys })).data;
+}
+export async function clearAllAmbient() {
+  return (await client.post("/ambient/events/read", { all: true })).data;
+}
+export async function dismissAmbientEvent(event_key) {
+  return (await client.delete(`/ambient/events/${event_key}`)).data;
+}
 export async function verifyChronicle(project_id) {
   return (await client.get(`/projects/${project_id}/chronicle/verify`)).data;
 }
