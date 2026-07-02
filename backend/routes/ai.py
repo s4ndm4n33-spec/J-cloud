@@ -214,7 +214,14 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     base = project_path(user["user_id"], project_id)
     message = payload.get("message", "")
     conversation_id = payload.get("conversation_id") or f"agent_{uuid.uuid4().hex[:10]}"
-    max_steps = int(payload.get("max_steps", 6))
+    max_steps = int(payload.get("max_steps", 40))
+    auto_mode = bool(payload.get("auto_mode", False))
+    if auto_mode:
+        # AUTO MODE: lift the cap so J can chew through multi-file tasks
+        # without stopping for handholding. Hard ceiling at 100 to prevent
+        # runaway loops if J ever gets stuck calling tools without progress.
+        max_steps = max(max_steps, 100)
+    max_steps = min(max_steps, 100)
 
     history = await db.messages.find(
         {"conversation_id": conversation_id, "user_id": user["user_id"]}, {"_id": 0}

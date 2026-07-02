@@ -103,6 +103,14 @@ function ChatTab({
   const [busy, setBusy] = useState(false);
   const [ending, setEnding] = useState(false);
   const scrollRef = useRef(null);
+  // AUTO mode = bump max_steps to 100. Sticky per browser (localStorage).
+  const [autoMode, setAutoMode] = useState(() => {
+    try { return localStorage.getItem("gauntlet_auto_mode") === "1"; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("gauntlet_auto_mode", autoMode ? "1" : "0"); } catch { /* ignore */ }
+  }, [autoMode]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -157,6 +165,7 @@ function ChatTab({
           project_id: project.project_id,
           conversation_id: conversationId,
           message: text,
+          auto_mode: autoMode,
         });
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
@@ -202,6 +211,22 @@ function ChatTab({
             {agentMode ? "// J can mutate files" : "// chat only"}
           </span>
         </label>
+        {agentMode && (
+          <button
+            data-testid="auto-mode-toggle"
+            onClick={() => setAutoMode((v) => !v)}
+            title={autoMode
+              ? "AUTO ON — J runs up to 100 tool calls per message without pausing. Click to disable."
+              : "AUTO OFF — J stops after ~40 tool calls per message. Click to enable AUTO."}
+            className={`flex items-center gap-1 px-2 py-0.5 font-mono text-[0.65rem] tracking-wider transition-colors ${
+              autoMode
+                ? "text-midnight bg-cyan hover:bg-cyan/80"
+                : "text-alloy border border-alloy/40 hover:text-cyan hover:border-cyan"
+            }`}
+          >
+            {autoMode ? "// AUTO · ON" : "// AUTO · OFF"}
+          </button>
+        )}
         <button
           data-testid="end-session-button"
           onClick={endSession}
