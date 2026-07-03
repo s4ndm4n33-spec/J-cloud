@@ -35,12 +35,13 @@ TRUNCATION_PATTERNS = [
     # Bare ellipsis used as a placeholder (NOT a real `...` Ellipsis literal,
     # which would parse fine in Python). We look for ellipsis in COMMENTS or
     # standalone lines, with optional descriptive suffix.
-    re.compile(r"^\s*(#|//|/\*)\s*\.\.\.\s*(rest|remaining|continued|truncated|omitted|elided|skip|more|content|code|implementation|impl|todo|file|function|class)\b",
+    re.compile(r"^\s*(#|//|/\*|<!--)\s*\.\.\.\s*(rest|remaining|continued|truncated|omitted|elided|skip|more|content|code|implementation|impl|todo|file|function|class)\b",
                re.IGNORECASE | re.MULTILINE),
-    # Lone ellipsis comment with nothing else: `# ...` or `// ...`
+    # Lone ellipsis comment with nothing else: `# ...` or `// ...` or `<!-- ... -->`
     re.compile(r"^\s*(#|//)\s*\.\.\.\s*(\*/)?\s*$", re.MULTILINE),
+    re.compile(r"^\s*<!--\s*\.\.\.\s*-->\s*$", re.MULTILINE),
     # Explicit truncation hints
-    re.compile(r"^\s*(#|//|/\*)\s*(rest of (?:the )?(?:file|code|implementation|content)|previous (?:code|content) (?:remains|unchanged)|content (?:omitted|truncated|elided|continues)|unchanged from (?:above|before)|same as (?:before|above))",
+    re.compile(r"^\s*(#|//|/\*|<!--)\s*(rest of (?:the )?(?:file|code|implementation|content)|previous (?:code|content) (?:remains|unchanged)|content (?:omitted|truncated|elided|continues)|unchanged from (?:above|before)|same as (?:before|above))",
                re.IGNORECASE | re.MULTILINE),
     # Placeholder comments
     re.compile(r"<\s*(TRUNCATED|REST OF CODE|REST OF FILE|YOUR CODE HERE|CONTINUE HERE|\.\.\.)\s*>",
@@ -217,6 +218,11 @@ def check_eof_completeness(content: str, language: str) -> Optional[str]:
     """Catch obvious 'file ends mid-thought' cases."""
     if not content:
         return "file is empty"
+    # Markup / prose languages legitimately end with '>' (e.g. `</html>`) or
+    # other punctuation the cliff-ending heuristic below would flag. Skip the
+    # cliff check for those — truncation-marker patterns still apply.
+    if language in {"html", "markdown", "text", "css", "yaml"}:
+        return None
     # Trailing newline is expected for source files (POSIX), warn if missing
     last_line = content.rstrip().split("\n")[-1] if content.rstrip() else ""
     # Common 'cliff' endings
