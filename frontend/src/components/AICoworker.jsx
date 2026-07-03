@@ -308,7 +308,8 @@ function ChatTab({
         />
         <button
           data-testid="chat-send"
-          onClick={send}
+          type="button"
+          onClick={() => send()}
           disabled={busy || !input.trim()}
           className="btn-solid"
         >
