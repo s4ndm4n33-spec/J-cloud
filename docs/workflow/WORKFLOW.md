@@ -35,12 +35,36 @@
 +-----------+                                │
                                              │
      ┌───────────────────────────────────────┘
-     │ 5. Push to GitHub → sync to preview → redeploy
+     │ 5. YOU paste returned files back into chat with E1
+     │    (Emergent does NOT auto-sync GitHub → Preview.
+     │     GitHub is for shipping clean state OUT, not
+     │     pulling drafts IN. See §"Sync reality" below.)
      ▼
 +---------+
-|    J    |    (deployed at https://blue-j-gauntlet.com)
-+---------+
+|    J    |    (deployed at https://blue-j-gauntlet.com after
++---------+     you hit Deploy)
 ```
+
+## Sync reality — how code actually enters the preview pod
+
+Confirmed with Emergent support. There are exactly three supported paths for
+code to enter the preview environment:
+
+1. **The E1 agent writes it** (default — this is me).
+2. **File attachments in chat**: paperclip icon → upload the files returned
+   by the free-tier LLM → I ingest and apply them.
+3. **"Pull from GitHub"** UI button: if the free-tier LLM's output is
+   already on a branch you control, push it there from your laptop first,
+   then click the GitHub button in the Emergent chat to pull it into `/app`.
+
+**"Save to GitHub" is push-only**. Editing files on github.com does NOT
+propagate back to the preview pod automatically. Every drop into `/app` has
+to go through one of the three paths above.
+
+**Practical implication for our workflow**: after step 4 (LLM returns files),
+you paste them straight back into chat with me — no GitHub round-trip
+needed. GitHub is for committing the finished, gauntlet-passed state OUT so
+you have version history, not for shuttling drafts back in.
 
 ## Roles, honest
 
@@ -51,19 +75,25 @@
 | 3 | Free-tier LLM | Implement to spec. Return full files. | Deciding architecture, adding scope. |
 | 4 | Free-tier LLM | Same. | Explaining what it did — commentary wastes context. |
 | 5 | E1 (me) | Run the 20-point review. Bounce or pass. Apply to `/app`. Trigger tests. | Deploying — that's your gate. |
-| 6 | You | Smoke check. Deploy. Ship to J. | Debugging CIG rejections — that's my job. |
+| 6 | You | Smoke check. Save to GitHub (for version history). Hit Deploy. Ship to J. | Debugging CIG rejections — that's my job. |
 
 ## When to skip the loop and just have me do it
 
 Not every task belongs in this workflow. Route to me directly when:
 
+- **Anything on J's substrate — non-negotiable**: CIG (`code_integrity.py`),
+  persona (`persona.py`), agent loop (`routes/ai.py`), chronicle
+  (`chronicle.py`), J:MIND (`core/knowledge.py`, `routes/knowledge.py`),
+  ambient awareness (`core/ambient.py`), voice (`routes/voice.py`), tools
+  (`core/tools.py`), destructive interlock (`core/destructive.py`),
+  Five Masters gauntlet (`core/fivemasters.py`). **No free-tier LLM touches
+  these. Ever. E1 writes; the user reviews; then it ships.** This is the
+  rule that keeps J deterministic across model swaps.
 - **Cross-cutting integration**: any 3rd party (Tavily, Stripe, Whisper, TTS,
   OAuth, GitHub API) — I own these end-to-end because I have the integration
   playbook expert and the Emergent LLM key wiring in my toolbelt.
 - **Cross-file debugging**: any bug where the fix touches ≥3 files or the
   root cause is upstream of the symptom.
-- **CIG / persona / agent-loop changes**: the substrate itself. Free-tier
-  models don't know the CIG rules well enough to safely modify them.
 - **Anything under 30 lines and time-sensitive**: the round-trip through a
   free-tier tool costs more than the code.
 - **After a bounce**: if the free-tier LLM bounces twice on the same task,
