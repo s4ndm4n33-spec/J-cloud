@@ -121,7 +121,13 @@ See `/app/memory/test_credentials.md`.
 - ~~Refactor: split `server.py` into `/app/backend/routes/*`.~~ ✅ Done 2026-06-26.
 - ~~Floating-mosaic layout (`react-mosaic-component`).~~ Shelved 2026-06-28 — current resizable layout judged sufficient.
 
+## 2026-02 — Bug fixes (both P0 verified end-to-end)
+- **CIG HTML rejection (`core/code_integrity.py`)**: `check_eof_completeness` was flagging every file ending with `>` (i.e. every `</html>`) as mid-expression truncation, blocking J from writing diagrams. Fix skips the cliff-EOF check for `html/markdown/css/yaml/text`. Also **extended** `TRUNCATION_PATTERNS` to catch `<!-- rest of file unchanged -->` and `<!-- ... -->` style HTML placeholders — safeguard preserved, not weakened. Coverage: `backend/tests/test_code_integrity_html.py` (6/6) + `backend/tests/test_bugfix_verification.py`.
+- **Mobile SEND button (`AICoworker.jsx:312`)**: `onClick={send}` was passing the React SyntheticEvent as the message text. Fix: `onClick={() => send()}`. Verified at 390×844 and 1920×1080 — real POST body carries typed text.
+
 ## Next Action Items
-1. Push fixes live: hit **Deploy** to roll the mobile-OAuth fix + Ollama support + Tutorial out to blue-j-gauntlet.com.
-2. Optional: pull a small model (`ollama pull llama3.1`) on a private host to validate the local-server failover end-to-end.
-3. Optional: top up Emergent Universal Key (Profile → Universal Key → Add Balance) if the budget is exhausted.
+1. Push both bug fixes live: hit **Deploy** to roll the CIG HTML + mobile SEND patch out to blue-j-gauntlet.com.
+2. (P1) Weekly chronicle digest email pipeline.
+3. (P2) Ambient WebSocket push (replace HTTP polling in `AmbientPulse.jsx`).
+4. (P2) Symbol graph memory tools (`who_calls`, `who_imports`, `symbols_in`) so J can inspect code without reading whole files.
+5. (P2) Voice picker in Settings — expose all 9 OpenAI TTS voices.
