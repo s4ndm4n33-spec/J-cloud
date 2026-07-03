@@ -463,16 +463,37 @@ async def auto_learn_from_search(
         except Exception:
             pass  # fall through to deterministic
 
-    # Deterministic fallback — one fact per top result.
-    for r in results[:3]:
-        title = r.get("title") or query
-        body = (r.get("content") or "")[:800]
-        if len(body) < 60:
+    # Deterministic fallback — one fact per top result, with quality gate.
+    # Global scope means noise compounds: reject forum/community/social-style
+    # titles, require decent content length, and prefer high-score Tavily hits.
+    _JUNK_TITLE_TOKENS = (
+        "forum", "community of", "reddit", "r/", "subreddit", "discussion",
+        "youtube", "tiktok", "instagram", "facebook", "twitter",
+    )
+    kept = 0
+    for r in results[:5]:
+        if kept >= 3:
+            break
+        title = (r.get("title") or "").strip()
+        body = (r.get("content") or "").strip()
+        score = float(r.get("score") or 0.0)
+        low_title = title.lower()
+        # Quality gates
+        if len(body) < 200:
             continue
+        if score and score < 0.35:
+            continue
+        if any(t in low_title for t in _JUNK_TITLE_TOKENS):
+            continue
+        # Trim body to first ~800 chars but at a sentence boundary
+        body_trim = body[:800]
+        cut = body_trim.rfind(". ")
+        if cut > 300:
+            body_trim = body_trim[: cut + 1]
         add = await add_fact(
             db,
-            title=title,
-            body=body,
+            title=title or query,
+            body=body_trim,
             category=category,
             tags=[category, "auto"],
             source_url=r.get("url") or "",
@@ -481,6 +502,7 @@ async def auto_learn_from_search(
         )
         if add.get("ok") and not add.get("deduped"):
             learned += 1
+            kept += 1
 
     return {"learned": learned, "category": category, "mode": "deterministic"}
 

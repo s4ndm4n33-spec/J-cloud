@@ -104,6 +104,10 @@ See `/app/memory/test_credentials.md`.
 - **Settings UX**: SettingsModal now has a dedicated Ollama section with preset chips (ollama → :11434, llama-cpp → :8080), URL + model fields, TEST CONNECTION button (green CONNECTED / orange OFFLINE pill with model list), LINK SERVER button. Resolved-chain panel renders 5 steps per task with ARMED/SKIP gating including the new Ollama row.
 - **Interactive Tutorial**: 8-step coachmark overlay (`Tutorial.jsx`) with spotlight cutout, target-element highlight ring, progress bar, NEXT/BACK/SKIP/GO BUILD controls. Auto-launches on first `/ide` load (server flag `users.tutorial_completed`). Always-available `?` replay button in the TopBar. Steps: Welcome → Top Bar → Project switcher → File Tree → Monaco → AI Coworker → Settings (BYOK/Universal/Ollama explained) → "Go build". Endpoints: `GET/POST /api/me/tutorial`.
 
+## 2026-02 — Bug fixes (both P0 verified end-to-end)
+- **CIG HTML rejection (`core/code_integrity.py`)**: `check_eof_completeness` was flagging every file ending with `>` (i.e. every `</html>`) as mid-expression truncation, blocking J from writing diagrams. Fix skips the cliff-EOF check for `html/markdown/css/yaml/text`. Also **extended** `TRUNCATION_PATTERNS` to catch `<!-- rest of file unchanged -->` and `<!-- ... -->` style HTML placeholders — safeguard preserved, not weakened. Coverage: `backend/tests/test_code_integrity_html.py` (6/6) + `backend/tests/test_bugfix_verification.py`.
+- **Mobile SEND button (`AICoworker.jsx:312`)**: `onClick={send}` was passing the React SyntheticEvent as the message text. Fix: `onClick={() => send()}`. Verified at 390×844 and 1920×1080 — real POST body carries typed text.
+
 ## Backlog / P1
 - Multi-cursor inline-diff editor for InlineEditModal output (currently full-block replace).
 - ~~File rename / drag-and-drop in tree.~~ ✅ Rename + DnD done 2026-06-28.
@@ -121,13 +125,21 @@ See `/app/memory/test_credentials.md`.
 - ~~Refactor: split `server.py` into `/app/backend/routes/*`.~~ ✅ Done 2026-06-26.
 - ~~Floating-mosaic layout (`react-mosaic-component`).~~ Shelved 2026-06-28 — current resizable layout judged sufficient.
 
-## 2026-02 — Bug fixes (both P0 verified end-to-end)
-- **CIG HTML rejection (`core/code_integrity.py`)**: `check_eof_completeness` was flagging every file ending with `>` (i.e. every `</html>`) as mid-expression truncation, blocking J from writing diagrams. Fix skips the cliff-EOF check for `html/markdown/css/yaml/text`. Also **extended** `TRUNCATION_PATTERNS` to catch `<!-- rest of file unchanged -->` and `<!-- ... -->` style HTML placeholders — safeguard preserved, not weakened. Coverage: `backend/tests/test_code_integrity_html.py` (6/6) + `backend/tests/test_bugfix_verification.py`.
-- **Mobile SEND button (`AICoworker.jsx:312`)**: `onClick={send}` was passing the React SyntheticEvent as the message text. Fix: `onClick={() => send()}`. Verified at 390×844 and 1920×1080 — real POST body carries typed text.
+## 2026-02 — J:MIND — persistent learning loop + mechanical/engineering competence
+- **New module** `core/knowledge.py`: global knowledge store with fastembed (`BAAI/bge-small-en-v1.5`, ~90MB, ONNX, no torch dep) semantic recall + Mongo text-search fallback. 16 domain categories (automotive/HVAC/plumbing/electrical/appliances/engineering/electronics/software/…). Deterministic quality gate on auto-learn rejects forum/community/social titles + requires ≥200 char body + Tavily score ≥0.35 so the global store stays high-signal.
+- **New endpoints** `/api/knowledge/{categories,stats,facts,proposals,search,recall}` + delete-fact + accept/reject proposal.
+- **Three new J tools**: `web_search` (Tavily, auto-learns durable facts), `recall_knowledge` (semantic recall), `propose_learning` (opt-in insight from conversation → user reviews in MIND panel).
+- **Persona upgrade** (`core/persona.py`): DOMAIN COMPETENCE section — J now explicitly claims + engages with automotive, HVAC, plumbing, electrical, appliances, mechanical engineering, electronics. J:MIND protocol codified in the prompt (call `recall_knowledge` before searching a repeat topic; call `propose_learning` for durable conversation insights only).
+- **Agent loop** (`routes/ai.py`): pre-injects top-K semantic-recall facts into the system context per turn — both plain `/ai/chat` and agentic `/ai/agent` benefit. ToolContext now carries `db` + `tavily_key` so the new tools can reach Mongo/Tavily without secret leakage through tool args.
+- **Frontend**: new "MIND" tab in AICoworker (`components/KnowledgePanel.jsx`) with 3 sub-views: FACTS (list + category filter + delete + source links), PROPOSALS (user ACCEPT / REJECT), TEACH (live Tavily search + auto-learn visible in the header counter).
+- **New deps**: `tavily-python==0.7.26`, `fastembed==0.8.0`, `onnxruntime==1.27.0`. New env var `TAVILY_API_KEY`.
+- **Testing**: `test_knowledge_mind.py` 5/5 + testing agent iter8 100% (11 backend + full frontend MIND UI). End-to-end verified: "Nissan Versa 2015 door lock actuator" search auto-learned 3 automotive facts; recall on "door lock torque" returned top hit at 0.71 cosine.
 
 ## Next Action Items
-1. Push both bug fixes live: hit **Deploy** to roll the CIG HTML + mobile SEND patch out to blue-j-gauntlet.com.
+1. Push J:MIND live to `blue-j-gauntlet.com` via Deploy.
 2. (P1) Weekly chronicle digest email pipeline.
-3. (P2) Ambient WebSocket push (replace HTTP polling in `AmbientPulse.jsx`).
-4. (P2) Symbol graph memory tools (`who_calls`, `who_imports`, `symbols_in`) so J can inspect code without reading whole files.
-5. (P2) Voice picker in Settings — expose all 9 OpenAI TTS voices.
+3. (P2) Optional LLM-extract path for auto-learn (already implemented in `auto_learn_from_search`, currently unused — wire it in via a `chain_call` on the `chat` task so J distills instead of raw-storing). Cost: 1 LLM call per web_search.
+4. (P2) Mongo Atlas Vector Search or pgvector adapter — current in-memory cosine scales to a few thousand facts; beyond that, migrate.
+5. (P2) Ambient WebSocket push (replace `AmbientPulse` HTTP polling).
+6. (P2) Symbol graph memory tools (`who_calls`, `who_imports`, `symbols_in`).
+7. (P2) Voice picker in Settings — 9 OpenAI TTS voices.

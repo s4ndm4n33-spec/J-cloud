@@ -19,18 +19,31 @@ from core import knowledge as km
 router = APIRouter()
 
 
-@router.on_event("startup")
-async def _boot():
-    await km._ensure_indexes(db)
+# Ensure indexes on first request per process (idempotent — cheap).
+# We do this lazily instead of via on_event('startup') because that hook is
+# deprecated in modern FastAPI.
+_indexed = False
+
+
+async def _ensure_ready():
+    global _indexed
+    if not _indexed:
+        try:
+            await km._ensure_indexes(db)
+            _indexed = True
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @router.get("/knowledge/categories")
 async def knowledge_categories(_user: dict = Depends(get_current_user)):
+    await _ensure_ready()
     return {"categories": km.CATEGORIES}
 
 
 @router.get("/knowledge/stats")
 async def knowledge_stats(_user: dict = Depends(get_current_user)):
+    await _ensure_ready()
     total = await db.knowledge_facts.count_documents({})
     pending = await db.knowledge_proposals.count_documents({"status": "pending"})
     accepted = await db.knowledge_proposals.count_documents({"status": "accepted"})
@@ -55,6 +68,7 @@ async def knowledge_facts(
     limit: int = 50,
     _user: dict = Depends(get_current_user),
 ):
+    await _ensure_ready()
     docs = await km.list_facts(db, category=category, tag=tag, q=q, limit=limit)
     return {"facts": docs, "count": len(docs)}
 
@@ -92,6 +106,7 @@ async def knowledge_resolve_proposal(
 @router.post("/knowledge/search")
 async def knowledge_search(payload: dict, _user: dict = Depends(get_current_user)):
     """Convenience passthrough — Tavily search + auto-learn (no LLM extract)."""
+    await _ensure_ready()
     query = (payload or {}).get("query", "")
     max_results = int((payload or {}).get("max_results", 5))
     result = await km.web_search(db, TAVILY_API_KEY, query, max_results=max_results)
@@ -104,6 +119,7 @@ async def knowledge_search(payload: dict, _user: dict = Depends(get_current_user
 
 @router.post("/knowledge/recall")
 async def knowledge_recall(payload: dict, _user: dict = Depends(get_current_user)):
+    await _ensure_ready()
     query = (payload or {}).get("query", "")
     k = int((payload or {}).get("k", 5))
     category = (payload or {}).get("category")
