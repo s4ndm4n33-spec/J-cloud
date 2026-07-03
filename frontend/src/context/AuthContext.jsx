@@ -20,7 +20,9 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     // CRITICAL: If returning from OAuth callback, skip /me — AuthCallback handles it
-    if (window.location.hash?.includes("session_id=")) {
+    const hash = window.location.hash || "";
+    const search = window.location.search || "";
+    if (hash.includes("session_id=") || search.includes("session_id=")) {
       setLoading(false);
       return;
     }

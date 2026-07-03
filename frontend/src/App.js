@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import "@/App.css";
+import "@/lib/monaco-setup"; // Force Monaco to use bundled copy (no CDN dependency)
 import SignIn from "@/pages/SignIn";
 import AuthCallback from "@/pages/AuthCallback";
 import IDE from "@/pages/IDE";
@@ -19,10 +20,16 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+function hasOAuthSession(location) {
+  if (location.hash?.includes("session_id=")) return true;
+  if (location.search?.includes("session_id=")) return true;
+  return false;
+}
+
 function AppRouter() {
   const location = useLocation();
-  // Race-free OAuth callback handling — fragment containing session_id wins
-  if (location.hash?.includes("session_id=")) {
+  // Race-free OAuth callback handling — fragment or query containing session_id wins
+  if (hasOAuthSession(location)) {
     return <AuthCallback />;
   }
   return (

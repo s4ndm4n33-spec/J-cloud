@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { X, Key, Trash, CheckCircle, CircleNotch, Stack } from "@phosphor-icons/react";
+import { X, Key, Trash, CheckCircle, CircleNotch, Stack, Plug, Cpu, Envelope } from "@phosphor-icons/react";
 import axios from "axios";
+import { getEmailPrefs, setEmailPrefs } from "@/lib/api";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 const PROVIDER_META = {
-  openai:    { label: "OpenAI",    note: "Powers GPT-5.2 refinement",            url: "https://platform.openai.com/api-keys" },
-  anthropic: { label: "Anthropic", note: "Powers Claude Sonnet 4.5 governance",  url: "https://console.anthropic.com/settings/keys" },
-  gemini:    { label: "Google Gemini", note: "Powers Gemini chat",               url: "https://aistudio.google.com/app/apikey" },
+  openai:    { label: "OpenAI",        note: "Powers GPT-5.2 refinement",          url: "https://platform.openai.com/api-keys" },
+  anthropic: { label: "Anthropic",     note: "Powers Claude Sonnet 4.5 governance", url: "https://console.anthropic.com/settings/keys" },
+  gemini:    { label: "Google Gemini", note: "Powers Gemini chat",                  url: "https://aistudio.google.com/app/apikey" },
+  ollama:    { label: "Local server (Ollama / llama.cpp)", note: "Self-hosted, OpenAI-compat. Last in the failover chain — runs only when cloud providers fail.", url: "https://ollama.com" },
 };
 const TASK_LABEL = { chat: "Chat", refine: "Refine", governance: "Gauntlet" };
 
@@ -14,18 +16,29 @@ export default function SettingsModal({ onClose }) {
   const [providers, setProviders] = useState([]);
   const [universalKey, setUniversalKey] = useState(true);
   const [chains, setChains] = useState({});
+  const [presets, setPresets] = useState({});
   const [drafts, setDrafts] = useState({});
+  const [ollamaDraft, setOllamaDraft] = useState({ base_url: "", default_model: "" });
+  const [ollamaTest, setOllamaTest] = useState(null); // {ok, models[], backend, error}
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState(null);
+  const [email, setEmail] = useState({ enabled: false, address: "", resend_configured: false });
 
   async function refresh() {
-    const [keysResp, chainResp] = await Promise.all([
+    const [keysResp, chainResp, emailResp] = await Promise.all([
       axios.get(`${API}/settings/keys`, { withCredentials: true }),
       axios.get(`${API}/ai/chain`, { withCredentials: true }),
+      getEmailPrefs().catch(() => ({ enabled: false, address: "", resend_configured: false })),
     ]);
     setProviders(keysResp.data.providers);
     setUniversalKey(keysResp.data.universal_key_available);
+    setPresets(keysResp.data.ollama_presets || {});
     setChains(chainResp.data.chains);
+    setEmail(emailResp);
+    const ol = keysResp.data.providers.find((p) => p.provider === "ollama");
+    if (ol && ol.configured) {
+      setOllamaDraft({ base_url: ol.base_url || "", default_model: ol.default_model || "" });
+    }
   }
   useEffect(() => { refresh(); }, []);
 
@@ -49,10 +62,51 @@ export default function SettingsModal({ onClose }) {
     setBusy(provider);
     try {
       await axios.delete(`${API}/settings/keys/${provider}`, { withCredentials: true });
+      if (provider === "ollama") {
+        setOllamaDraft({ base_url: "", default_model: "" });
+        setOllamaTest(null);
+      }
       await refresh();
-      flash(`${PROVIDER_META[provider].label} key removed`);
+      flash(`${PROVIDER_META[provider].label} removed`);
     } finally { setBusy(null); }
   }
+
+  async function testOllamaEndpoint() {
+    const base_url = ollamaDraft.base_url.trim();
+    if (!base_url) { flash("Set a URL first"); return; }
+    setBusy("ollama-test");
+    setOllamaTest(null);
+    try {
+      const r = await axios.post(`${API}/settings/keys/ollama/test`, { base_url },
+                                 { withCredentials: true });
+      setOllamaTest(r.data);
+      if (r.data.ok && !ollamaDraft.default_model && (r.data.models || []).length) {
+        setOllamaDraft((d) => ({ ...d, default_model: r.data.models[0] }));
+      }
+    } catch (e) {
+      setOllamaTest({ ok: false, error: e?.response?.data?.detail || "Request failed" });
+    } finally { setBusy(null); }
+  }
+
+  async function saveOllama() {
+    const { base_url, default_model } = ollamaDraft;
+    if (!base_url.trim() || !default_model.trim()) {
+      flash("URL and model are both required");
+      return;
+    }
+    setBusy("ollama-save");
+    try {
+      await axios.put(`${API}/settings/keys`, {
+        provider: "ollama", base_url: base_url.trim(), default_model: default_model.trim(),
+      }, { withCredentials: true });
+      await refresh();
+      flash("Local server linked");
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Save failed");
+    } finally { setBusy(null); }
+  }
+
+  const ollamaConfigured = providers.find((p) => p.provider === "ollama")?.configured;
 
   return (
     <div className="fixed inset-0 z-[55] flex items-center justify-center bg-midnight/80 backdrop-blur-sm p-4" onClick={onClose}>
@@ -74,8 +128,8 @@ export default function SettingsModal({ onClose }) {
         <div className="px-5 py-4 space-y-4">
           <div className="font-mono text-[0.7rem] text-alloy leading-relaxed">
             Emergent Universal Key runs first. If it fails, your provider keys engage in the order
-            below — same provider, then cross-provider — until one succeeds. Keys are encrypted at
-            rest (Fernet) and never leave your workspace.
+            below — same provider, then cross-provider, then your local server — until one succeeds.
+            Cloud keys are encrypted at rest (Fernet) and never leave your workspace.
           </div>
 
           <div
@@ -93,7 +147,7 @@ export default function SettingsModal({ onClose }) {
             <span className="font-mono text-[0.65rem] text-cyan">PRIMARY</span>
           </div>
 
-          {providers.map((p) => {
+          {providers.filter((p) => p.provider !== "ollama").map((p) => {
             const meta = PROVIDER_META[p.provider];
             return (
               <div key={p.provider} className="border border-cyan/15 p-3" data-testid={`provider-${p.provider}`}>
@@ -148,6 +202,182 @@ export default function SettingsModal({ onClose }) {
               </div>
             );
           })}
+
+          {/* Ollama / local server */}
+          <div className="border border-cyan/15 p-3" data-testid="provider-ollama">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Cpu size={14} className="text-cyan" weight="fill" />
+                <div>
+                  <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">
+                    {PROVIDER_META.ollama.label}
+                  </div>
+                  <div className="font-mono text-[0.65rem] text-alloy">// {PROVIDER_META.ollama.note}</div>
+                </div>
+              </div>
+              {ollamaConfigured ? (
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[0.65rem] text-viridian" data-testid="provider-ollama-masked">
+                    LINKED
+                  </span>
+                  <button
+                    onClick={() => remove("ollama")}
+                    disabled={busy === "ollama"}
+                    className="text-alloy hover:text-orange"
+                    title="Remove"
+                    data-testid="provider-ollama-remove"
+                  ><Trash size={14} /></button>
+                </div>
+              ) : (
+                <span className="font-mono text-[0.65rem] text-alloy">// optional</span>
+              )}
+            </div>
+
+            <div className="flex gap-1 mb-2">
+              {Object.entries(presets).map(([name, url]) => (
+                <button
+                  key={name}
+                  onClick={() => setOllamaDraft((d) => ({ ...d, base_url: url }))}
+                  className="font-mono text-[0.6rem] px-2 py-1 border border-cyan/20 text-alloy hover:text-cyan hover:border-cyan/50"
+                  data-testid={`ollama-preset-${name}`}
+                >{name}</button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <input
+                type="text"
+                placeholder="base url (http://host:port)"
+                value={ollamaDraft.base_url}
+                onChange={(e) => setOllamaDraft((d) => ({ ...d, base_url: e.target.value }))}
+                className="bg-steel border border-cyan/20 px-2 py-1.5 font-mono text-xs text-gridwhite"
+                data-testid="ollama-url-input"
+              />
+              <input
+                type="text"
+                placeholder="default model (e.g. llama3.1)"
+                value={ollamaDraft.default_model}
+                onChange={(e) => setOllamaDraft((d) => ({ ...d, default_model: e.target.value }))}
+                className="bg-steel border border-cyan/20 px-2 py-1.5 font-mono text-xs text-gridwhite"
+                data-testid="ollama-model-input"
+              />
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={testOllamaEndpoint}
+                disabled={busy === "ollama-test" || !ollamaDraft.base_url.trim()}
+                className="px-3 py-1.5 border border-cyan/40 text-cyan font-mono text-[0.7rem] hover:bg-cyan/10 inline-flex items-center gap-1.5"
+                data-testid="ollama-test"
+              >
+                {busy === "ollama-test"
+                  ? <CircleNotch size={12} className="animate-spin" />
+                  : <Plug size={12} />}
+                TEST CONNECTION
+              </button>
+              <button
+                onClick={saveOllama}
+                disabled={busy === "ollama-save" || !ollamaDraft.base_url.trim() || !ollamaDraft.default_model.trim()}
+                className="btn-solid text-[0.7rem]"
+                data-testid="ollama-save"
+              >
+                {busy === "ollama-save" ? <CircleNotch size={12} className="animate-spin" /> : null}
+                LINK SERVER
+              </button>
+            </div>
+
+            {ollamaTest && (
+              <div
+                className={`mt-2 p-2 font-mono text-[0.7rem] border ${
+                  ollamaTest.ok ? "border-viridian/40 text-viridian" : "border-orange/40 text-orange"
+                }`}
+                data-testid="ollama-test-result"
+              >
+                {ollamaTest.ok ? (
+                  <>
+                    CONNECTED · {ollamaTest.backend} ·{" "}
+                    {(ollamaTest.models || []).length
+                      ? `${ollamaTest.models.length} model(s): ${ollamaTest.models.slice(0, 6).join(", ")}`
+                      : "no models published"}
+                  </>
+                ) : (
+                  <>OFFLINE · {ollamaTest.error}</>
+                )}
+              </div>
+            )}
+
+            <div className="mt-2 font-mono text-[0.6rem] text-alloy leading-relaxed">
+              {`> tip: run `}
+              <span className="text-cyan">{`ollama serve`}</span>
+              {` then `}
+              <span className="text-cyan">{`ollama pull llama3.1`}</span>
+              {`. Endpoint defaults to localhost:11434. Remote? set the host here and ensure the port is reachable from this workspace.`}
+            </div>
+          </div>
+
+          <div className="border border-cyan/15 p-3" data-testid="email-prefs">
+            <div className="flex items-center gap-2 mb-2">
+              <Envelope size={14} className="text-cyan" weight="fill" />
+              <div className="font-display text-[0.8rem] tracking-[0.15em] text-gridwhite">
+                EMAIL TRANSCRIPTS
+              </div>
+              <span className="font-mono text-[0.6rem] text-alloy ml-auto">
+                {email.resend_configured ? "// Resend: configured" : "// Resend: not configured"}
+              </span>
+            </div>
+            <label className="flex items-start gap-2 cursor-pointer select-none mb-2">
+              <input
+                type="checkbox"
+                checked={email.enabled}
+                onChange={(e) => setEmail((p) => ({ ...p, enabled: e.target.checked }))}
+                className="mt-0.5 accent-cyan-500"
+                data-testid="email-enabled-checkbox"
+              />
+              <div>
+                <div className="font-mono text-[0.7rem] text-gridwhite">
+                  Email me the transcript when I end a session.
+                </div>
+                <div className="font-mono text-[0.6rem] text-alloy">
+                  Opt-in. Off by default. Includes the J-voiced narrative + full Q&amp;A history.
+                </div>
+              </div>
+            </label>
+            <input
+              type="email"
+              placeholder="your@email.com"
+              value={email.address}
+              onChange={(e) => setEmail((p) => ({ ...p, address: e.target.value }))}
+              disabled={!email.enabled}
+              className="w-full bg-steel border border-cyan/20 px-2 py-1.5 font-mono text-xs text-gridwhite disabled:opacity-40"
+              data-testid="email-address-input"
+            />
+            <div className="flex justify-end mt-2">
+              <button
+                onClick={async () => {
+                  setBusy("email");
+                  try {
+                    const r = await setEmailPrefs(email.enabled, email.address.trim());
+                    setEmail((p) => ({ ...p, ...r }));
+                    flash("Email preferences saved");
+                  } catch (e) {
+                    flash(e?.response?.data?.detail || "Save failed");
+                  } finally { setBusy(null); }
+                }}
+                disabled={busy === "email"}
+                className="btn-solid text-[0.7rem]"
+                data-testid="email-save"
+              >
+                {busy === "email" ? <CircleNotch size={11} className="animate-spin" /> : null}
+                SAVE
+              </button>
+            </div>
+            {!email.resend_configured && (
+              <div className="mt-2 font-mono text-[0.6rem] text-orange border-l-2 border-orange/40 pl-2">
+                Heads-up: backend has no RESEND_API_KEY set yet, so emails won&apos;t actually
+                send. Saving the preference is fine — it kicks in the moment the key is added.
+              </div>
+            )}
+          </div>
 
           <div className="border border-cyan/15 p-3" data-testid="chain-resolved">
             <div className="flex items-center gap-2 mb-3">

@@ -1,19 +1,56 @@
-import { useState } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix } from "@phosphor-icons/react";
+import { useState, useEffect } from "react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash } from "@phosphor-icons/react";
+import AmbientPulse from "@/components/AmbientPulse";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
+import { getPrivateMode, setPrivateMode, deleteProject } from "@/lib/api";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
 
 export default function TopBar({
   user, projects, activeProject, onProjectChange, onNewProject,
-  gauntletStatus, previewOpen, onTogglePreview,
+  gauntletStatus, previewOpen, onTogglePreview, onOpenTutorial,
+  onProjectDeleted, onAmbientAskJ,
 }) {
   const { signOut } = useAuth();
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [privateOn, setPrivateOn] = useState(false);
+  const [ollamaReady, setOllamaReady] = useState(false);
+  const [pmBusy, setPmBusy] = useState(false);
+  const [pmError, setPmError] = useState(null);
+
+  async function refreshPrivate() {
+    try {
+      const r = await getPrivateMode();
+      setPrivateOn(!!r.enabled);
+      setOllamaReady(!!r.ollama_ready);
+    } catch { /* ignore */ }
+  }
+  useEffect(() => { refreshPrivate(); }, []);
+  // Re-poll after Settings closes (user may have just linked Ollama)
+  useEffect(() => { if (!settingsOpen) refreshPrivate(); }, [settingsOpen]);
+
+  async function togglePrivate() {
+    if (pmBusy) return;
+    const next = !privateOn;
+    if (next && !ollamaReady) {
+      setPmError("Link your local server first");
+      setSettingsOpen(true);
+      setTimeout(() => setPmError(null), 4000);
+      return;
+    }
+    setPmBusy(true);
+    try {
+      const r = await setPrivateMode(next);
+      setPrivateOn(!!r.enabled);
+    } catch (e) {
+      setPmError(e?.response?.data?.detail || "Toggle failed");
+      setTimeout(() => setPmError(null), 4000);
+    } finally { setPmBusy(false); }
+  }
 
   const score = gauntletStatus?.score ?? 5;
   const passColor = score >= 4 ? "var(--viridian)" : score >= 2 ? "var(--orange)" : "#FF2D55";
@@ -64,14 +101,38 @@ export default function TopBar({
             />
           </form>
         ) : (
-          <button
-            data-testid="new-project-button"
-            title="New project"
-            onClick={() => setCreating(true)}
-            className="text-alloy hover:text-cyan transition-colors"
-          >
-            <Plus size={16} weight="bold" />
-          </button>
+          <>
+            <button
+              data-testid="new-project-button"
+              title="New project"
+              onClick={() => setCreating(true)}
+              className="text-alloy hover:text-cyan transition-colors"
+            >
+              <Plus size={16} weight="bold" />
+            </button>
+            {activeProject && onProjectDeleted && (
+              <button
+                data-testid="delete-project-button"
+                title={`Delete project "${activeProject.name}" (workspace files; chronicle is preserved)`}
+                onClick={async () => {
+                  const name = activeProject.name || activeProject.project_id;
+                  const confirm = window.prompt(
+                    `Type the project name to permanently delete:\n\n${name}\n\nThis removes the workspace files. Chat history and chronicle entries are kept for audit.`
+                  );
+                  if (confirm !== name) return;
+                  try {
+                    await deleteProject(activeProject.project_id);
+                    onProjectDeleted(activeProject.project_id);
+                  } catch (e) {
+                    window.alert(`Delete failed: ${e?.response?.data?.detail || e.message}`);
+                  }
+                }}
+                className="text-alloy hover:text-orange transition-colors"
+              >
+                <Trash size={14} weight="bold" />
+              </button>
+            )}
+          </>
         )}
       </div>
 
@@ -94,6 +155,42 @@ export default function TopBar({
         <span className="font-mono text-[0.7rem] text-cyan">{score}/5</span>
       </div>
 
+      {/* Private Mode toggle */}
+      <button
+        data-testid="private-mode-toggle"
+        onClick={togglePrivate}
+        disabled={pmBusy}
+        title={
+          privateOn
+            ? "PRIVATE — only your local server runs. Click to allow cloud + Universal Key again."
+            : ollamaReady
+              ? "PUBLIC — Universal Key + cloud BYOK + local server. Click to lock to local only."
+              : "Link a local server in Settings to enable Private Mode."
+        }
+        className={`inline-flex items-center gap-1.5 px-2 py-1 border font-display text-[0.65rem] tracking-[0.2em] transition-colors ${
+          privateOn
+            ? "border-cyan text-cyan bg-cyan/10 shadow-[0_0_12px_rgba(0,217,255,0.3)]"
+            : ollamaReady
+              ? "border-cyan/30 text-alloy hover:text-cyan hover:border-cyan/60"
+              : "border-alloy/20 text-alloy/60 hover:text-alloy"
+        } ${pmBusy ? "opacity-50" : ""}`}
+      >
+        {privateOn ? <Lock size={12} weight="fill" /> : <LockOpen size={12} weight="regular" />}
+        <span data-testid="private-mode-label">{privateOn ? "PRIVATE" : "PUBLIC"}</span>
+      </button>
+
+      {pmError && (
+        <div
+          className="absolute top-12 right-3 mt-1 panel px-3 py-2 font-mono text-[0.7rem] text-orange border border-orange/40"
+          data-testid="private-mode-error"
+        >
+          {pmError}
+        </div>
+      )}
+
+      {/* JARVIS heartbeat pulse */}
+      <AmbientPulse onAskJ={onAmbientAskJ} />
+
       <button
         data-testid="toggle-preview"
         onClick={onTogglePreview}
@@ -104,6 +201,16 @@ export default function TopBar({
       </button>
 
       <div className="hidden sm:block h-6 w-px bg-cyan/15"></div>
+      {onOpenTutorial && (
+        <button
+          data-testid="help-button"
+          onClick={onOpenTutorial}
+          title="Replay tutorial"
+          className="text-alloy hover:text-cyan transition-colors"
+        >
+          <Question size={14} weight="bold" />
+        </button>
+      )}
       <button
         data-testid="settings-button"
         onClick={() => setSettingsOpen(true)}

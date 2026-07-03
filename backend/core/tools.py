@@ -43,6 +43,14 @@ TOOL_SPEC: list[dict[str, Any]] = [
     # Exec
     {"name": "run_command", "desc": "Run a shell command in the workspace. Destructive patterns halt and require user override. timeout default 120s, max 600s — use longer for npm install / pip install / cargo build.",
      "args": {"cmd": "string", "timeout": "int seconds (default 120, max 600)"}},
+    {"name": "install_package", "desc": "Install one or more packages with a specific package manager. Long-running (600s).",
+     "args": {"manager": "'pip' | 'npm' | 'yarn' | 'cargo' | 'go' | 'gem' | 'composer' | 'apt'",
+              "packages": "list of strings",
+              "dev": "bool — install as dev dependency where supported"}},
+    {"name": "install_extensions", "desc": "Install the curated 'essentials' bundle for a language (testing + linting + formatting tools). 600s timeout.",
+     "args": {"language": "'python' | 'node' | 'typescript' | 'rust' | 'go'"}},
+    {"name": "compile_file", "desc": "Compile a single source file using the toolchain native to its language (C/C++ via gcc, Java via javac, Rust via rustc, Go via 'go build', TypeScript via tsc).",
+     "args": {"path": "string", "output": "optional output path"}},
     # Project build
     {"name": "detect_project", "desc": "Inspect the workspace and report what kind of project it is (node, python, rust, go, etc.) + suggested install/build/test commands.",
      "args": {}},
@@ -67,9 +75,21 @@ TOOL_SPEC: list[dict[str, Any]] = [
     # Web
     {"name": "web_fetch", "desc": "GET a URL and return the first 8000 chars of text (for docs lookup).",
      "args": {"url": "string"}},
+    {"name": "web_search", "desc": "Search the LIVE web via Tavily. Returns an LLM-synthesised answer + top-5 URLs with snippets. Use for automotive, engineering, HVAC, plumbing, electrical, appliance, or ANY real-world knowledge question that would benefit from up-to-date sources. Every search automatically distills durable facts into J's Mind (global knowledge store).",
+     "args": {"query": "string", "max_results": "int (default 5, max 10)"}},
+    {"name": "recall_knowledge", "desc": "Semantically search J's Mind — the global knowledge store. Returns the top-K facts J has learned from prior searches or accepted user proposals. Use BEFORE running a fresh web_search if the question is on ground you may have already covered.",
+     "args": {"query": "string", "k": "int (default 5)", "category": "optional category filter"}},
+    {"name": "propose_learning", "desc": "Save a durable insight from THIS conversation into J's Mind. Unlike web_search (which auto-learns from web results), this is opt-in: the user reviews it in the MIND panel and accepts / edits / rejects. Use it for things a future J should remember — user preferences, project-specific quirks, hard-won lessons.",
+     "args": {"title": "string (max 200)", "body": "string (1-3 sentence fact, max 6000)", "category": "one of the known categories", "tags": "list of strings"}},
     # Control
     {"name": "ask_user", "desc": "Pause and ask the user a question. Use BEFORE bulk mutations (>5 files) or any irreversible action.",
      "args": {"question": "string"}},
+    {"name": "propose_chronicle_entry", "desc": "Suggest a chronicle entry the user can ACCEPT / EDIT / SKIP. Use for architectural decisions, bug-and-fix lessons, benchmarks, 'don't do X again' notes. NOT for ordinary tool calls (those auto-mirror).",
+     "args": {"title": "string (max 120 chars)", "body": "string (markdown, max 4000)",
+              "tags": "list of strings (max 6, lowercased)",
+              "suggested_kind": "'milestone' | 'narrative' | 'user_note' (default milestone)"}},
+    {"name": "screenshot_preview", "desc": "Snapshot the current HTML contents of a file into the chronicle for design-review trails. Captures source AS IS for replay. Use on any .html / .htm file after a meaningful UI change.",
+     "args": {"html_path": "string (relative path to a .html file)", "note": "optional string explaining what changed (max 400)"}},
     {"name": "done", "desc": "Signal that the task is complete. The 'summary' goes to the user.",
      "args": {"summary": "string"}},
 ]
@@ -126,28 +146,61 @@ def _safe(base: Path, rel: str) -> Path:
     return candidate
 
 
+from . import code_integrity
+
+
+async def _gated_write(ctx: ToolContext, target, path: str, content: str,
+                       mode: str = "w") -> dict:
+    """Atomic write that runs `code_integrity.validate` first.
+    `mode='w'` = overwrite, `mode='a'` = append (validation runs on the
+    POST-append final content so chunked writes still produce a valid file).
+    """
+    if mode == "a" and target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            existing = ""
+        final = existing + content
+    else:
+        final = content
+
+    result = code_integrity.validate(path, final)
+    if not result.ok:
+        return {
+            **result.as_tool_error(),
+            "path": path,
+            "mode": mode,
+            "rejected": True,
+            "bytes_attempted": len(content),
+        }
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write via temp + rename (so a crash leaves the OLD file intact)
+    import os, uuid
+    tmp = target.with_suffix(target.suffix + f".gate.{uuid.uuid4().hex[:6]}")
+    tmp.write_text(final, encoding="utf-8")
+    os.replace(tmp, target)
+    return {
+        "ok": True, "path": path, "bytes": len(final),
+        "validated": True, "language": result.language,
+    }
+
+
 async def _tool_create_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
     if target.exists():
         return {"error": "File already exists. Use write_file to overwrite."}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return {"ok": True, "path": path, "bytes": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="w")
 
 
 async def _tool_write_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return {"ok": True, "path": path, "bytes": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="w")
 
 
 async def _tool_append_file(ctx: ToolContext, path: str, content: str = "") -> dict:
     target = _safe(ctx.base, path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("a") as f:
-        f.write(content)
-    return {"ok": True, "path": path, "bytes_appended": len(content)}
+    return await _gated_write(ctx, target, path, content, mode="a")
 
 
 async def _tool_read_file(ctx: ToolContext, path: str) -> dict:
@@ -298,8 +351,89 @@ def _detect_kind(base: Path) -> dict[str, Any]:
     return {"primary": primary, "manifests": found, "suggested": suggestions}
 
 
-async def _tool_detect_project(ctx: ToolContext) -> dict:
-    return _detect_kind(ctx.base)
+EXTENSION_BUNDLES = {
+    "python": {"manager": "pip", "packages": ["pytest", "ruff", "black", "mypy"], "dev": False},
+    "node": {"manager": "npm", "packages": ["eslint", "prettier", "jest", "nodemon"], "dev": True},
+    "typescript": {"manager": "npm", "packages": ["typescript", "@types/node", "eslint", "prettier", "ts-node"], "dev": True},
+    "rust": {"manager": "cargo", "packages": ["clippy", "rustfmt"], "dev": False},
+    "go": {"manager": "go", "packages": ["golang.org/x/tools/cmd/goimports", "honnef.co/go/tools/cmd/staticcheck"], "dev": False},
+}
+
+
+def _install_cmd(manager: str, packages: list[str], dev: bool = False) -> str:
+    pkgs = " ".join(packages)
+    if manager == "pip":
+        return f"pip install {pkgs}"
+    if manager == "npm":
+        flag = "--save-dev" if dev else "--save"
+        return f"npm install {flag} {pkgs}"
+    if manager == "yarn":
+        flag = "--dev" if dev else ""
+        return f"yarn add {flag} {pkgs}".strip()
+    if manager == "cargo":
+        # Cargo components for clippy/rustfmt, otherwise cargo add
+        components = {"clippy", "rustfmt"}
+        if all(p in components for p in packages):
+            return "rustup component add " + " ".join(packages)
+        return "cargo add " + pkgs
+    if manager == "go":
+        return "go install " + " ".join(f"{p}@latest" for p in packages)
+    if manager == "gem":
+        return "gem install " + pkgs
+    if manager == "composer":
+        flag = "--dev" if dev else ""
+        return f"composer require {flag} {pkgs}".strip()
+    if manager == "apt":
+        # Sandboxed environments rarely permit apt. Try userland anyway; surface failure.
+        return f"apt-get install -y --no-install-recommends {pkgs}"
+    return f"echo unsupported manager: {manager}"
+
+
+async def _tool_install_package(ctx: ToolContext, manager: str,
+                                packages: list[str] | str,
+                                dev: bool = False) -> dict:
+    if isinstance(packages, str):
+        packages = packages.split()
+    if not packages:
+        return {"error": "no packages given"}
+    cmd = _install_cmd(manager, packages, dev)
+    return {"manager": manager, "packages": packages, "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_install_extensions(ctx: ToolContext, language: str) -> dict:
+    bundle = EXTENSION_BUNDLES.get(language.lower())
+    if not bundle:
+        return {"error": f"unknown language: {language}. Supported: {list(EXTENSION_BUNDLES)}"}
+    return await _tool_install_package(ctx, **bundle)
+
+
+COMPILE_CMDS = {
+    ".c":   lambda src, out: f"gcc -O2 -Wall -o {out} {src}",
+    ".cpp": lambda src, out: f"g++ -O2 -std=c++17 -Wall -o {out} {src}",
+    ".cc":  lambda src, out: f"g++ -O2 -std=c++17 -Wall -o {out} {src}",
+    ".rs":  lambda src, out: f"rustc -O -o {out} {src}",
+    ".go":  lambda src, out: f"go build -o {out} {src}",
+    ".java": lambda src, out: f"javac -d $(dirname {out}) {src}",
+    ".ts":  lambda src, out: f"tsc --outFile {out} {src}",
+    ".kt":  lambda src, out: f"kotlinc {src} -include-runtime -d {out}",
+}
+
+
+async def _tool_compile_file(ctx: ToolContext, path: str, output: str = "") -> dict:
+    src = _safe(ctx.base, path)
+    if not src.is_file():
+        return {"error": f"Not a file: {path}"}
+    ext = src.suffix.lower()
+    builder = COMPILE_CMDS.get(ext)
+    if not builder:
+        return {"error": f"No native compiler mapping for {ext}. Use run_command for custom builds."}
+    out = output or str(src.with_suffix("").relative_to(ctx.base))
+    out_path = _safe(ctx.base, out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = builder(src.relative_to(ctx.base).as_posix(), out_path.relative_to(ctx.base).as_posix())
+    return {"src": path, "output": out, "cmd": cmd,
+            **(await _tool_run_command(ctx, cmd, timeout=300))}
 
 
 async def _tool_install_deps(ctx: ToolContext) -> dict:
@@ -307,6 +441,10 @@ async def _tool_install_deps(ctx: ToolContext) -> dict:
     cmd = info["suggested"].get("install", "true")
     return {"detected": info["primary"], "cmd": cmd,
             **(await _tool_run_command(ctx, cmd, timeout=600))}
+
+
+async def _tool_detect_project(ctx: ToolContext) -> dict:
+    return _detect_kind(ctx.base)
 
 
 async def _tool_build_project(ctx: ToolContext) -> dict:
@@ -421,9 +559,161 @@ async def _tool_web_fetch(ctx: ToolContext, url: str) -> dict:
         return {"error": str(e)[:200]}
 
 
+async def _tool_web_search(ctx: ToolContext, query: str, max_results: int = 5) -> dict:
+    """Tavily search + auto-learn. Requires an injected db handle + Tavily key.
+
+    ToolContext carries `db` and `tavily_key` when the agent loop set them up.
+    Auto-learn is a side-effect that fires AFTER we return results to J so
+    it never blocks her next reasoning step; here we do it inline for
+    simplicity, which is fine because Tavily is already the slow leg.
+    """
+    from . import knowledge as km
+    api_key = getattr(ctx, "tavily_key", "") or ""
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    result = await km.web_search(db_ref, api_key, query, max_results=max_results)
+    if result.get("error"):
+        return result
+    learn = await km.auto_learn_from_search(db_ref, result)
+    # Return a slimmer payload to J — she doesn't need every field.
+    return {
+        "query": result["query"],
+        "answer": result.get("answer", ""),
+        "results": [
+            {"title": r["title"], "url": r["url"], "content": r["content"][:600]}
+            for r in result.get("results", [])
+        ],
+        "learned": learn.get("learned", 0),
+        "category": learn.get("category"),
+    }
+
+
+async def _tool_recall_knowledge(ctx: ToolContext, query: str, k: int = 5,
+                                 category: str | None = None) -> dict:
+    from . import knowledge as km
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    hits = await km.recall(db_ref, query, k=int(k), category=category)
+    return {
+        "query": query,
+        "hits": [
+            {"id": h["id"], "title": h["title"], "body": h["body"][:500],
+             "category": h["category"], "source_url": h.get("source_url", ""),
+             "score": h.get("score")}
+            for h in hits
+        ],
+    }
+
+
+async def _tool_propose_learning(
+    ctx: ToolContext,
+    title: str,
+    body: str = "",
+    category: str = "general",
+    tags: list | None = None,
+) -> dict:
+    """J proposes a durable insight — user reviews in the MIND panel."""
+    from . import knowledge as km
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title or not body:
+        return {"error": "title and body required"}
+    prop = await km.add_proposal(
+        db_ref,
+        title=title, body=body,
+        category=category, tags=tags or [],
+        source="conversation",
+        user_id=getattr(ctx, "user_id", ""),
+    )
+    return {"ok": True, "proposal_id": prop["id"], "status": prop["status"]}
+
+
 async def _tool_ask_user(ctx: ToolContext, question: str) -> dict:
     # The loop short-circuits on this — frontend will render and pause.
     return {"_ask_user": True, "question": question}
+
+
+async def _tool_propose_chronicle_entry(
+    ctx: ToolContext,
+    title: str,
+    body: str = "",
+    tags: list | None = None,
+    suggested_kind: str = "milestone",
+) -> dict:
+    """J proposes a chronicle entry mid-session.
+
+    The entry is written immediately as kind="proposed" / signer="J" so it's
+    auditable, but the Chronicle UI flags it as pending. The user can ACCEPT
+    (promote to suggested_kind), EDIT (open the manual entry form pre-filled),
+    or SKIP (delete the proposal).
+
+    Use this when you've just done something a future-you should remember
+    (architectural choice, a bug-and-fix lesson, a benchmark, a 'don't do X again').
+    Don't use it for ordinary tool calls — those auto-mirror as kind="tool".
+    """
+    title = (title or "").strip()
+    if not title:
+        return {"error": "title required"}
+    if suggested_kind not in {"milestone", "narrative", "user_note"}:
+        suggested_kind = "milestone"
+    return {
+        "ok": True,
+        "_propose_chronicle": {
+            "title": title[:120],
+            "body": (body or "")[:4000],
+            "tags": [str(t).lower()[:24] for t in (tags or [])][:6],
+            "suggested_kind": suggested_kind,
+        },
+    }
+
+
+async def _tool_screenshot_preview(
+    ctx: ToolContext,
+    html_path: str,
+    note: str = "",
+) -> dict:
+    """Snapshot the current contents of an HTML file into the chronicle for
+    design-review trails.
+
+    Captures the HTML source AS IT IS RIGHT NOW (so future-you can re-render
+    exactly what the page looked like at this moment), saves it to
+    `.gauntlet/snapshots/<ts>_<sanitized>.html`, and signals the agent loop to
+    write a chronicle milestone entry tagged `design-snapshot` referencing it.
+    """
+    target = _safe(ctx.base, html_path)
+    if not target.exists() or not target.is_file():
+        return {"error": f"HTML file not found: {html_path}"}
+    if not re.search(r"\.html?$", target.name, re.IGNORECASE):
+        return {"error": f"Not an HTML file: {html_path}"}
+    try:
+        content = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return {"error": f"File is not UTF-8 readable: {html_path}"}
+
+    import time as _time
+    ts = _time.strftime("%Y%m%d-%H%M%S", _time.gmtime())
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", target.stem)[:40] or "snapshot"
+    snap_rel = f".gauntlet/snapshots/{ts}_{sanitized}.html"
+    snap_target = ctx.base / snap_rel
+    snap_target.parent.mkdir(parents=True, exist_ok=True)
+    snap_target.write_text(content, encoding="utf-8")
+
+    return {
+        "ok": True,
+        "html_path": html_path,
+        "snapshot_path": snap_rel,
+        "bytes": len(content),
+        "_snapshot_preview": {
+            "html_path": html_path,
+            "snapshot_path": snap_rel,
+            "note": (note or "")[:400],
+        },
+    }
 
 
 async def _tool_done(ctx: ToolContext, summary: str = "") -> dict:
@@ -442,13 +732,25 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "search_code": _tool_search_code,
     "find_files": _tool_find_files,
     "run_command": _tool_run_command,
+    "detect_project": _tool_detect_project,
+    "install_deps": _tool_install_deps,
+    "install_package": _tool_install_package,
+    "install_extensions": _tool_install_extensions,
+    "compile_file": _tool_compile_file,
+    "build_project": _tool_build_project,
+    "extract_zip": _tool_extract_zip,
     "git_status": _tool_git_status,
     "git_commit": _tool_git_commit,
     "github_clone": _tool_github_clone,
     "gauntlet_evaluate": _tool_gauntlet_evaluate,
     "project_audit": _tool_project_audit,
     "web_fetch": _tool_web_fetch,
+    "web_search": _tool_web_search,
+    "recall_knowledge": _tool_recall_knowledge,
+    "propose_learning": _tool_propose_learning,
     "ask_user": _tool_ask_user,
+    "propose_chronicle_entry": _tool_propose_chronicle_entry,
+    "screenshot_preview": _tool_screenshot_preview,
     "done": _tool_done,
 }
 

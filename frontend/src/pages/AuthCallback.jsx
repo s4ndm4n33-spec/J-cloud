@@ -1,39 +1,46 @@
 import { useEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
 import { exchangeSession } from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
 
 // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
+function extractSessionId() {
+  // Emergent returns the id in the URL fragment, but some mobile browsers
+  // (Android Chrome via certain redirect chains) strip the fragment and surface
+  // it as a query param instead. Support both.
+  const hash = window.location.hash || "";
+  const hashMatch = hash.match(/session_id=([^&]+)/);
+  if (hashMatch) return decodeURIComponent(hashMatch[1]);
+  const params = new URLSearchParams(window.location.search || "");
+  const q = params.get("session_id");
+  return q ? decodeURIComponent(q) : null;
+}
+
 export default function AuthCallback() {
-  const navigate = useNavigate();
-  const { setUser } = useAuth();
   const hasProcessed = useRef(false);
 
   useEffect(() => {
     if (hasProcessed.current) return;
     hasProcessed.current = true;
 
-    const hash = window.location.hash || "";
-    const m = hash.match(/session_id=([^&]+)/);
-    if (!m) {
-      navigate("/login", { replace: true });
+    const sessionId = extractSessionId();
+    if (!sessionId) {
+      window.location.replace("/login");
       return;
     }
-    const sessionId = decodeURIComponent(m[1]);
 
     (async () => {
       try {
-        const { user } = await exchangeSession(sessionId);
-        setUser(user);
-        // strip hash and route
-        window.history.replaceState({}, "", "/ide");
-        navigate("/ide", { replace: true, state: { user } });
+        await exchangeSession(sessionId);
+        // Flag the next IDE entry to show the boot/launch sequence
+        try { sessionStorage.setItem("gauntlet_play_launch", "1"); } catch { /* ignore */ }
+        // Hard navigate so AuthProvider re-runs /me with the new cookie/token.
+        // Avoids any React state race that bounces mobile users back to /login.
+        window.location.replace("/ide");
       } catch (e) {
         console.error("Session exchange failed", e);
-        navigate("/login", { replace: true });
+        window.location.replace("/login");
       }
     })();
-  }, [navigate, setUser]);
+  }, []);
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-midnight">

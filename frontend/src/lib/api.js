@@ -3,13 +3,36 @@ import axios from "axios";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
 
+export const TOKEN_KEY = "gauntlet_session_token";
+
+export function getStoredToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+export function setStoredToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch { /* private mode */ }
+}
+
 const client = axios.create({
   baseURL: API,
   withCredentials: true,
 });
 
+// Attach Bearer fallback for mobile / blocked-3p-cookies scenarios.
+client.interceptors.request.use((config) => {
+  const t = getStoredToken();
+  if (t) {
+    config.headers = config.headers || {};
+    config.headers.Authorization = `Bearer ${t}`;
+  }
+  return config;
+});
+
 export async function exchangeSession(session_id) {
   const r = await client.post("/auth/session", { session_id });
+  if (r.data?.session_token) setStoredToken(r.data.session_token);
   return r.data;
 }
 export async function me() {
@@ -17,7 +40,7 @@ export async function me() {
   return r.data;
 }
 export async function logout() {
-  await client.post("/auth/logout");
+  try { await client.post("/auth/logout"); } finally { setStoredToken(null); }
 }
 
 export async function listProjects() {
@@ -37,6 +60,15 @@ export async function writeFile(project_id, path, content) {
 }
 export async function deleteFile(project_id, path) {
   return (await client.delete(`/projects/${project_id}/file`, { params: { path } })).data;
+}
+export async function renameFile(project_id, old_path, new_path) {
+  return (await client.post(`/projects/${project_id}/file/rename`, { old_path, new_path })).data;
+}
+export async function mkdir(project_id, path) {
+  return (await client.post(`/projects/${project_id}/mkdir`, { path })).data;
+}
+export async function deleteProject(project_id) {
+  return (await client.delete(`/projects/${project_id}`)).data;
 }
 
 export async function evaluateGauntlet(code, language) {
@@ -165,11 +197,96 @@ export async function uploadFolder(project_id, files, paths, onProgress) {
 export function downloadUrl(project_id, path) {
   return `${API}/projects/${project_id}/download?path=${encodeURIComponent(path)}`;
 }
-export function downloadZipUrl(project_id) {
-  return `${API}/projects/${project_id}/download_zip`;
+export function downloadZipUrl(project_id, folderPath = "") {
+  const q = folderPath ? `?path=${encodeURIComponent(folderPath)}` : "";
+  return `${API}/projects/${project_id}/download_zip${q}`;
 }
 
-// ----- Agents -----
+/**
+ * Auth-aware zip download. Goes through the axios client so the Bearer token
+ * (mobile / blocked-3p-cookies) gets attached, then triggers a blob download.
+ */
+export async function downloadProjectZip(project_id, folderPath = "") {
+  const url = `/projects/${project_id}/download_zip${
+    folderPath ? `?path=${encodeURIComponent(folderPath)}` : ""
+  }`;
+  const r = await client.get(url, { responseType: "blob" });
+  const filename = folderPath
+    ? `${folderPath.split("/").filter(Boolean).pop() || project_id}.zip`
+    : `${project_id}.zip`;
+  const blobUrl = URL.createObjectURL(r.data);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+// ----- Chronicle (flight-recorder project history) -----
+export async function listChronicle(project_id, session_id = null) {
+  const q = session_id ? `?session_id=${encodeURIComponent(session_id)}` : "";
+  return (await client.get(`/projects/${project_id}/chronicle${q}`)).data;
+}
+export async function listChronicleSessions(project_id) {
+  return (await client.get(`/projects/${project_id}/chronicle/sessions`)).data;
+}
+export async function addChronicleEntry(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/chronicle/entry`, payload)).data;
+}
+export async function acceptChronicleProposal(project_id, payload) {
+  return (await client.post(`/projects/${project_id}/chronicle/accept-proposal`, payload)).data;
+}
+export async function skipChronicleProposal(project_id, entry_hash) {
+  return (await client.post(`/projects/${project_id}/chronicle/skip-proposal`, { entry_hash })).data;
+}
+export async function readChronicleSnapshot(project_id, path) {
+  return (await client.get(`/projects/${project_id}/chronicle/snapshot`,
+                            { params: { path } })).data;
+}
+export async function listAmbientEvents({ since = null, limit = 30, unread_only = false } = {}) {
+  const params = { limit };
+  if (since) params.since = since;
+  if (unread_only) params.unread_only = true;
+  return (await client.get("/ambient/events", { params })).data;
+}
+export async function markAmbientRead(event_keys) {
+  return (await client.post("/ambient/events/read", { event_keys })).data;
+}
+export async function clearAllAmbient() {
+  return (await client.post("/ambient/events/read", { all: true })).data;
+}
+export async function dismissAmbientEvent(event_key) {
+  return (await client.delete(`/ambient/events/${event_key}`)).data;
+}
+export async function verifyChronicle(project_id) {
+  return (await client.get(`/projects/${project_id}/chronicle/verify`)).data;
+}
+export async function exportChronicle(project_id, session_id = null) {
+  const q = session_id ? `?session_id=${encodeURIComponent(session_id)}` : "";
+  const r = await client.get(`/projects/${project_id}/chronicle/export${q}`,
+                              { responseType: "blob" });
+  const blobUrl = URL.createObjectURL(r.data);
+  const a = document.createElement("a");
+  a.href = blobUrl;
+  a.download = `chronicle_${project_id}_${session_id || "full"}.md`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+}
+
+export async function closeChatSession(project_id, conversation_id) {
+  return (await client.post(`/projects/${project_id}/chronicle/close-session`,
+                            { conversation_id })).data;
+}
+
+// ----- Email preferences (opt-in transcripts) -----
+export async function getEmailPrefs() {
+  return (await client.get("/me/email-prefs")).data;
+}
+export async function setEmailPrefs(enabled, address) {
+  return (await client.post("/me/email-prefs", { enabled, address })).data;
+}
 export async function listAgents() {
   return (await client.get("/agents")).data;
 }
@@ -178,4 +295,62 @@ export async function createAgent(payload) {
 }
 export async function deleteAgent(agent_id) {
   return (await client.delete(`/agents/${agent_id}`)).data;
+}
+
+// ----- Tutorial -----
+export async function getTutorialState() {
+  return (await client.get("/me/tutorial")).data;
+}
+export async function setTutorialState(completed) {
+  return (await client.post("/me/tutorial", { completed })).data;
+}
+
+// ----- Private Mode -----
+export async function getPrivateMode() {
+  return (await client.get("/me/private-mode")).data;
+}
+export async function setPrivateMode(enabled) {
+  return (await client.post("/me/private-mode", { enabled })).data;
+}
+
+// ----- Ollama / local server -----
+export async function testOllama(base_url) {
+  return (await client.post("/settings/keys/ollama/test", { base_url })).data;
+}
+export async function saveOllama(base_url, default_model) {
+  return (await client.put("/settings/keys", {
+    provider: "ollama", base_url, default_model,
+  })).data;
+}
+
+
+// ----- Knowledge (J:MIND) -----
+export async function getKnowledgeStats() {
+  return (await client.get("/knowledge/stats")).data;
+}
+export async function getKnowledgeFacts({ category, tag, q, limit = 50 } = {}) {
+  const params = {};
+  if (category) params.category = category;
+  if (tag) params.tag = tag;
+  if (q) params.q = q;
+  if (limit) params.limit = limit;
+  return (await client.get("/knowledge/facts", { params })).data;
+}
+export async function deleteKnowledgeFact(id) {
+  return (await client.delete(`/knowledge/facts/${id}`)).data;
+}
+export async function getKnowledgeProposals(status = "pending") {
+  return (await client.get("/knowledge/proposals", { params: { status } })).data;
+}
+export async function resolveKnowledgeProposal(id, action, edits) {
+  return (await client.post(`/knowledge/proposals/${id}/${action}`, edits ? { edits } : {})).data;
+}
+export async function knowledgeSearch(query, { max_results = 5, learn = true } = {}) {
+  return (await client.post("/knowledge/search", { query, max_results, learn })).data;
+}
+export async function knowledgeRecall(query, { k = 5, category } = {}) {
+  return (await client.post("/knowledge/recall", { query, k, category })).data;
+}
+export async function getKnowledgeCategories() {
+  return (await client.get("/knowledge/categories")).data;
 }

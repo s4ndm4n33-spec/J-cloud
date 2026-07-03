@@ -1,15 +1,18 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Scroll } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone, Brain } from "@phosphor-icons/react";
 import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
-import MigrationLogPanel from "@/components/MigrationLogPanel";
+import ChroniclePanel from "@/components/ChroniclePanel";
+import KnowledgePanel from "@/components/KnowledgePanel";
+import VoiceMode from "@/components/VoiceMode";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
   { key: "refine", label: "REFINE", model: "GPT-5.2", Icon: Sparkle },
   { key: "gauntlet", label: "GAUNTLET", model: "CLAUDE 4.5", Icon: ShieldCheck },
   { key: "audit", label: "AUDIT", model: "/100", Icon: Gauge },
-  { key: "log", label: "LOG", model: "SIGNED", Icon: Scroll },
+  { key: "mind", label: "MIND", model: "J:MIND", Icon: Brain },
+  { key: "chronicle", label: "CHRONICLE", model: "BLACKBOX", Icon: Book },
   { key: "logs", label: "TRACE", model: "BOOT", Icon: Pulse },
 ];
 
@@ -24,6 +27,14 @@ function truncateTree(tree, depth = 0, lines = []) {
 
 export default function AICoworker({ project, activeTab, tree, onScoreUpdate, onApplyRefined, onAICall }) {
   const [tab, setTab] = useState("chat");
+
+  // Chat state lifted from ChatTab so tab switches don't wipe the conversation.
+  // Only `END SESSION` (in ChatTab) clears it.
+  const [chatMessages, setChatMessages] = useState([
+    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
+  ]);
+  const [chatConversationId, setChatConversationId] = useState(null);
+  const [chatAgentMode, setChatAgentMode] = useState(true);
 
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">
@@ -50,7 +61,22 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
       </div>
 
       <div className="flex-1 min-h-0">
-        {tab === "chat" && <ChatTab project={project} activeTab={activeTab} tree={tree} onAICall={onAICall} />}
+        {/* Chat tab is always rendered but hidden when not active — keeps the
+            DOM (scroll position, textarea focus) AND state alive across tab switches. */}
+        <div className={tab === "chat" ? "h-full" : "hidden"}>
+          <ChatTab
+            project={project}
+            activeTab={activeTab}
+            tree={tree}
+            onAICall={onAICall}
+            messages={chatMessages}
+            setMessages={setChatMessages}
+            conversationId={chatConversationId}
+            setConversationId={setChatConversationId}
+            agentMode={chatAgentMode}
+            setAgentMode={setChatAgentMode}
+          />
+        </div>
         {tab === "refine" && (
           <RefineTab
             activeTab={activeTab}
@@ -63,47 +89,116 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
           <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} onAICall={onAICall} />
         )}
         {tab === "audit" && <AuditPanel project={project} onAICall={onAICall} />}
-        {tab === "log" && <MigrationLogPanel project={project} onAICall={onAICall} />}
+        {tab === "mind" && <KnowledgePanel />}
+        {tab === "chronicle" && <ChroniclePanel project={project} />}
         {tab === "logs" && <LogsTab />}
       </div>
     </div>
   );
 }
 
-function ChatTab({ project, activeTab, tree, onAICall }) {
-  const [messages, setMessages] = useState([
-    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
-  ]);
+function ChatTab({
+  project, activeTab, tree, onAICall,
+  messages, setMessages,
+  conversationId, setConversationId,
+  agentMode, setAgentMode,
+}) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [conversationId, setConversationId] = useState(null);
-  const [agentMode, setAgentMode] = useState(true);
+  const [ending, setEnding] = useState(false);
   const scrollRef = useRef(null);
+  // AUTO mode = bump max_steps to 100. Sticky per browser (localStorage).
+  const [autoMode, setAutoMode] = useState(() => {
+    try { return localStorage.getItem("gauntlet_auto_mode") === "1"; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("gauntlet_auto_mode", autoMode ? "1" : "0"); } catch { /* ignore */ }
+  }, [autoMode]);
+
+  // Hands-free voice loop state
+  const [voiceOn, setVoiceOn] = useState(false);
+  const [voiceReply, setVoiceReply] = useState(null); // text J should speak next
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  async function send() {
-    if (!input.trim() || busy) return;
-    const text = input.trim();
-    setInput("");
+  // Listen for ambient-seeded prompts (from the JARVIS pulse drawer)
+  useEffect(() => {
+    function pullSeed() {
+      try {
+        const seed = sessionStorage.getItem("gauntlet_chat_seed");
+        if (seed) {
+          sessionStorage.removeItem("gauntlet_chat_seed");
+          setInput((prev) => (prev ? `${prev}\n\n${seed}` : seed));
+          // Ensure agent mode is on — ambient events typically want action
+          setAgentMode(true);
+        }
+      } catch { /* ignore */ }
+    }
+    pullSeed(); // in case one was set before this mount
+    window.addEventListener("gauntlet-chat-seed", pullSeed);
+    return () => window.removeEventListener("gauntlet-chat-seed", pullSeed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const hasUserActivity = messages.some((m) => m.role === "user");
+
+  async function endSession() {
+    if (ending || !hasUserActivity) return;
+    if (!project) {
+      setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
+      return;
+    }
+    if (!conversationId) {
+      // No conversation has been opened yet (no messages sent) — just clear.
+      setMessages([{ role: "system", content: "J is online. Five Masters loaded. What needs building?" }]);
+      return;
+    }
+    setEnding(true);
+    try {
+      const { closeChatSession } = await import("@/lib/api");
+      const r = await closeChatSession(project.project_id, conversationId);
+      setMessages((prev) => [
+        ...prev,
+        { role: "system", content: `// SESSION CLOSED · chronicle entry written${r.email_sent ? " · transcript emailed" : ""}.` },
+        r.narrative ? { role: "assistant", content: r.narrative, meta: { source: "chronicle" } } : null,
+        { role: "system", content: "// new session starts on your next message." },
+      ].filter(Boolean));
+      setConversationId(null);
+      onAICall?.();
+    } catch (e) {
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        content: `// failed to close session: ${e?.response?.data?.detail || e.message}`,
+      }]);
+    } finally { setEnding(false); }
+  }
+
+  async function send(explicitText = null) {
+    const raw = explicitText != null ? explicitText : input;
+    if (!raw?.trim() || busy) return null;
+    const text = raw.trim();
+    if (explicitText == null) setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
     try {
       if (agentMode) {
         if (!project) {
           setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
-          return;
+          return null;
         }
         const r = await aiAgent({
           project_id: project.project_id,
           conversation_id: conversationId,
           message: text,
+          auto_mode: autoMode,
         });
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
         onAICall?.();
+        return r.final || "";
       } else {
         const treeSummary = truncateTree(tree || []).join("\n");
         const r = await aiChat({
@@ -117,9 +212,12 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
         onAICall?.();
+        return r.reply || "";
       }
     } catch (e) {
-      setMessages((prev) => [...prev, { role: "assistant", content: `// LLM error: ${e?.response?.data?.detail || e.message}` }]);
+      const err = `// LLM error: ${e?.response?.data?.detail || e.message}`;
+      setMessages((prev) => [...prev, { role: "assistant", content: err }]);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -145,6 +243,59 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
             {agentMode ? "// J can mutate files" : "// chat only"}
           </span>
         </label>
+        {agentMode && (
+          <button
+            data-testid="auto-mode-toggle"
+            onClick={() => setAutoMode((v) => !v)}
+            title={autoMode
+              ? "AUTO ON — J runs up to 100 tool calls per message without pausing. Click to disable."
+              : "AUTO OFF — J stops after ~40 tool calls per message. Click to enable AUTO."}
+            className={`flex items-center gap-1 px-2 py-0.5 font-mono text-[0.65rem] tracking-wider transition-colors ${
+              autoMode
+                ? "text-midnight bg-cyan hover:bg-cyan/80"
+                : "text-alloy border border-alloy/40 hover:text-cyan hover:border-cyan"
+            }`}
+          >
+            {autoMode ? "// AUTO · ON" : "// AUTO · OFF"}
+          </button>
+        )}
+        <button
+          data-testid="voice-mode-toggle"
+          onClick={() => setVoiceOn((v) => !v)}
+          title={voiceOn
+            ? "HANDS-FREE ON — J listens for you continuously and speaks back. Click to disable."
+            : "Enable hands-free voice conversation with J. Uses your microphone."}
+          className={`flex items-center gap-1 px-2 py-0.5 font-mono text-[0.65rem] tracking-wider transition-colors ${
+            voiceOn
+              ? "text-midnight bg-cyan hover:bg-cyan/80"
+              : "text-alloy border border-alloy/40 hover:text-cyan hover:border-cyan"
+          }`}
+        >
+          <Microphone size={11} weight={voiceOn ? "fill" : "regular"} />
+          {voiceOn ? "VOICE · ON" : "VOICE"}
+        </button>
+        {voiceOn && (
+          <VoiceMode
+            enabled={voiceOn}
+            onEnable={setVoiceOn}
+            speakingText={voiceReply}
+            onTranscript={async (text) => {
+              const reply = await send(text);
+              if (reply) setVoiceReply(reply);
+            }}
+          />
+        )}
+        <button
+          data-testid="end-session-button"
+          onClick={endSession}
+          disabled={ending || busy || !hasUserActivity}
+          title={hasUserActivity
+            ? "Close this conversation — J writes a chronicle narrative + (if opted in) emails you the transcript."
+            : "Send at least one message before closing a session."}
+          className="ml-auto font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
+        >
+          {ending ? "CLOSING…" : "END SESSION"}
+        </button>
       </div>
       <div className="p-2 flex gap-2">
         <textarea
@@ -160,7 +311,8 @@ function ChatTab({ project, activeTab, tree, onAICall }) {
         />
         <button
           data-testid="chat-send"
-          onClick={send}
+          type="button"
+          onClick={() => send()}
           disabled={busy || !input.trim()}
           className="btn-solid"
         >
