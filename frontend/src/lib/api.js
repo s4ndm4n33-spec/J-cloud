@@ -322,3 +322,35 @@ export async function saveOllama(base_url, default_model) {
     provider: "ollama", base_url, default_model,
   })).data;
 }
+
+
+// ----- Knowledge (J:MIND) -----
+export async function getKnowledgeStats() {
+  return (await client.get("/knowledge/stats")).data;
+}
+export async function getKnowledgeFacts({ category, tag, q, limit = 50 } = {}) {
+  const params = {};
+  if (category) params.category = category;
+  if (tag) params.tag = tag;
+  if (q) params.q = q;
+  if (limit) params.limit = limit;
+  return (await client.get("/knowledge/facts", { params })).data;
+}
+export async function deleteKnowledgeFact(id) {
+  return (await client.delete(`/knowledge/facts/${id}`)).data;
+}
+export async function getKnowledgeProposals(status = "pending") {
+  return (await client.get("/knowledge/proposals", { params: { status } })).data;
+}
+export async function resolveKnowledgeProposal(id, action, edits) {
+  return (await client.post(`/knowledge/proposals/${id}/${action}`, edits ? { edits } : {})).data;
+}
+export async function knowledgeSearch(query, { max_results = 5, learn = true } = {}) {
+  return (await client.post("/knowledge/search", { query, max_results, learn })).data;
+}
+export async function knowledgeRecall(query, { k = 5, category } = {}) {
+  return (await client.post("/knowledge/recall", { query, k, category })).data;
+}
+export async function getKnowledgeCategories() {
+  return (await client.get("/knowledge/categories")).data;
+}

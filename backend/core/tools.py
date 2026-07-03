@@ -75,6 +75,12 @@ TOOL_SPEC: list[dict[str, Any]] = [
     # Web
     {"name": "web_fetch", "desc": "GET a URL and return the first 8000 chars of text (for docs lookup).",
      "args": {"url": "string"}},
+    {"name": "web_search", "desc": "Search the LIVE web via Tavily. Returns an LLM-synthesised answer + top-5 URLs with snippets. Use for automotive, engineering, HVAC, plumbing, electrical, appliance, or ANY real-world knowledge question that would benefit from up-to-date sources. Every search automatically distills durable facts into J's Mind (global knowledge store).",
+     "args": {"query": "string", "max_results": "int (default 5, max 10)"}},
+    {"name": "recall_knowledge", "desc": "Semantically search J's Mind — the global knowledge store. Returns the top-K facts J has learned from prior searches or accepted user proposals. Use BEFORE running a fresh web_search if the question is on ground you may have already covered.",
+     "args": {"query": "string", "k": "int (default 5)", "category": "optional category filter"}},
+    {"name": "propose_learning", "desc": "Save a durable insight from THIS conversation into J's Mind. Unlike web_search (which auto-learns from web results), this is opt-in: the user reviews it in the MIND panel and accepts / edits / rejects. Use it for things a future J should remember — user preferences, project-specific quirks, hard-won lessons.",
+     "args": {"title": "string (max 200)", "body": "string (1-3 sentence fact, max 6000)", "category": "one of the known categories", "tags": "list of strings"}},
     # Control
     {"name": "ask_user", "desc": "Pause and ask the user a question. Use BEFORE bulk mutations (>5 files) or any irreversible action.",
      "args": {"question": "string"}},
@@ -553,6 +559,80 @@ async def _tool_web_fetch(ctx: ToolContext, url: str) -> dict:
         return {"error": str(e)[:200]}
 
 
+async def _tool_web_search(ctx: ToolContext, query: str, max_results: int = 5) -> dict:
+    """Tavily search + auto-learn. Requires an injected db handle + Tavily key.
+
+    ToolContext carries `db` and `tavily_key` when the agent loop set them up.
+    Auto-learn is a side-effect that fires AFTER we return results to J so
+    it never blocks her next reasoning step; here we do it inline for
+    simplicity, which is fine because Tavily is already the slow leg.
+    """
+    from . import knowledge as km
+    api_key = getattr(ctx, "tavily_key", "") or ""
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    result = await km.web_search(db_ref, api_key, query, max_results=max_results)
+    if result.get("error"):
+        return result
+    learn = await km.auto_learn_from_search(db_ref, result)
+    # Return a slimmer payload to J — she doesn't need every field.
+    return {
+        "query": result["query"],
+        "answer": result.get("answer", ""),
+        "results": [
+            {"title": r["title"], "url": r["url"], "content": r["content"][:600]}
+            for r in result.get("results", [])
+        ],
+        "learned": learn.get("learned", 0),
+        "category": learn.get("category"),
+    }
+
+
+async def _tool_recall_knowledge(ctx: ToolContext, query: str, k: int = 5,
+                                 category: str | None = None) -> dict:
+    from . import knowledge as km
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    hits = await km.recall(db_ref, query, k=int(k), category=category)
+    return {
+        "query": query,
+        "hits": [
+            {"id": h["id"], "title": h["title"], "body": h["body"][:500],
+             "category": h["category"], "source_url": h.get("source_url", ""),
+             "score": h.get("score")}
+            for h in hits
+        ],
+    }
+
+
+async def _tool_propose_learning(
+    ctx: ToolContext,
+    title: str,
+    body: str = "",
+    category: str = "general",
+    tags: list | None = None,
+) -> dict:
+    """J proposes a durable insight — user reviews in the MIND panel."""
+    from . import knowledge as km
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "knowledge store not wired into this ctx"}
+    title = (title or "").strip()
+    body = (body or "").strip()
+    if not title or not body:
+        return {"error": "title and body required"}
+    prop = await km.add_proposal(
+        db_ref,
+        title=title, body=body,
+        category=category, tags=tags or [],
+        source="conversation",
+        user_id=getattr(ctx, "user_id", ""),
+    )
+    return {"ok": True, "proposal_id": prop["id"], "status": prop["status"]}
+
+
 async def _tool_ask_user(ctx: ToolContext, question: str) -> dict:
     # The loop short-circuits on this — frontend will render and pause.
     return {"_ask_user": True, "question": question}
@@ -665,6 +745,9 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "gauntlet_evaluate": _tool_gauntlet_evaluate,
     "project_audit": _tool_project_audit,
     "web_fetch": _tool_web_fetch,
+    "web_search": _tool_web_search,
+    "recall_knowledge": _tool_recall_knowledge,
+    "propose_learning": _tool_propose_learning,
     "ask_user": _tool_ask_user,
     "propose_chronicle_entry": _tool_propose_chronicle_entry,
     "screenshot_preview": _tool_screenshot_preview,

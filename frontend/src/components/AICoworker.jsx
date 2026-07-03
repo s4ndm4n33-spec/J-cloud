@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from "react";
-import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone, Brain } from "@phosphor-icons/react";
 import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
+import KnowledgePanel from "@/components/KnowledgePanel";
 import VoiceMode from "@/components/VoiceMode";
 
 const TABS = [
@@ -10,6 +11,7 @@ const TABS = [
   { key: "refine", label: "REFINE", model: "GPT-5.2", Icon: Sparkle },
   { key: "gauntlet", label: "GAUNTLET", model: "CLAUDE 4.5", Icon: ShieldCheck },
   { key: "audit", label: "AUDIT", model: "/100", Icon: Gauge },
+  { key: "mind", label: "MIND", model: "J:MIND", Icon: Brain },
   { key: "chronicle", label: "CHRONICLE", model: "BLACKBOX", Icon: Book },
   { key: "logs", label: "TRACE", model: "BOOT", Icon: Pulse },
 ];
@@ -87,6 +89,7 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
           <GauntletTab activeTab={activeTab} onScoreUpdate={onScoreUpdate} onAICall={onAICall} />
         )}
         {tab === "audit" && <AuditPanel project={project} onAICall={onAICall} />}
+        {tab === "mind" && <KnowledgePanel />}
         {tab === "chronicle" && <ChroniclePanel project={project} />}
         {tab === "logs" && <LogsTab />}
       </div>

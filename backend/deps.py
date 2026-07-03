@@ -23,6 +23,7 @@ load_dotenv(ROOT_DIR / ".env")
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 WORKSPACE_ROOT = Path(os.environ["WORKSPACE_ROOT"])
 OVERRIDE_PASSWORD = os.environ["OVERRIDE_PASSWORD"]
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)

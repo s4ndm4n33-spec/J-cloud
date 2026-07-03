@@ -26,8 +26,8 @@ from core import chronicle as chron
 from core import ambient
 from routes import (
     agents, ai, ambient as ambient_routes, audit, auth, chronicle,
-    gauntlet, git_local, github, projects, settings, terminal, uploads,
-    voice,
+    gauntlet, git_local, github, knowledge, projects, settings, terminal,
+    uploads, voice,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -40,6 +40,7 @@ api = APIRouter(prefix="/api")
 for module in (
     auth, projects, gauntlet, terminal, git_local, settings,
     chronicle, ai, github, audit, uploads, agents, ambient_routes, voice,
+    knowledge,
 ):
     api.include_router(module.router)
 

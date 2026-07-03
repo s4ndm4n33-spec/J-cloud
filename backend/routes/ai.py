@@ -9,12 +9,13 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY
+from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
 from core.keyvault import decrypt_key
 from core.migration_log import log_tool_event
+from core import knowledge as km
 from core.persistence import (
     associative_recall, associative_record, chronos_append,
     heuristic_get, heuristic_update, render_signature,
@@ -120,7 +121,18 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
     message = payload.get("message", "")
     project_id = payload.get("project_id")
     ctx = _build_context_block(payload)
-    user_text = f"{ctx}\n\n[USER]\n{message}" if ctx else message
+
+    # J:MIND — pull top-K remembered facts relevant to this message and
+    # prepend them so plain chat gets sharper with every session too.
+    mind_block = ""
+    try:
+        mind_hits = await km.recall(db, message, k=5)
+        mind_block = km.format_recall_for_prompt(mind_hits)
+    except Exception as e:
+        log.warning(f"mind recall (chat) failed: {e}")
+
+    ctx_parts = [p for p in (ctx, mind_block) if p]
+    user_text = ("\n\n".join(ctx_parts) + f"\n\n[USER]\n{message}") if ctx_parts else message
 
     if project_id:
         proj = await db.projects.find_one(
@@ -319,6 +331,22 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     gh_token = await _resolve_github_token(user["user_id"])
     ctx = ToolContext(base=base, user_id=user["user_id"],
                       project_id=project_id, github_token=gh_token)
+    # Wire J's Mind into the tool context so web_search / recall_knowledge /
+    # propose_learning can reach Mongo + Tavily without leaking creds through
+    # tool args.
+    ctx.db = db
+    ctx.tavily_key = TAVILY_API_KEY
+
+    # --- J:MIND recall — inject top-K globally learned facts relevant to
+    # the user's current message into her system context. This is the
+    # "learn from web + accepted proposals" payoff loop.
+    try:
+        mind_hits = await km.recall(db, message, k=5)
+        mind_block = km.format_recall_for_prompt(mind_hits)
+        if mind_block:
+            transcript_for_llm.append(mind_block)
+    except Exception as e:
+        log.warning(f"mind recall failed: {e}")
 
     steps: list[dict[str, Any]] = []
     done_reason: Optional[str] = None
