@@ -170,6 +170,32 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         "ts": datetime.now(timezone.utc).isoformat(),
         "meta": meta,
     })
+
+    # Persist as training data: every J response is a candidate SFT/DPO row.
+    # We log to chronicle_entries with kind='ai_answer' so exports can pick it
+    # up without a schema migration. `base` is optional (project chain);
+    # /ai/chat doesn't have a project scope so we skip the hash chain here
+    # and use messages-only for /ai/chat, but tag it as ai_answer for grep.
+    try:
+        await db.chronicle_entries.insert_one({
+            "id": f"chr_{uuid.uuid4().hex[:12]}",
+            "kind": "ai_answer",
+            "scope": "chat",
+            "project_id": project_id or "",
+            "session_id": conversation_id,
+            "user_id": user["user_id"],
+            "prompt": (message or "")[:2000],
+            "response": (reply or "")[:6000],
+            "model": (meta or {}).get("model_used") or (meta or {}).get("model") or "unknown",
+            "provider": (meta or {}).get("provider_used") or (meta or {}).get("provider") or "unknown",
+            "verdict": "passed" if reply and not reply.startswith("// J:OFFLINE") else "offline",
+            "context_present": bool(ctx_parts),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "signer": "J",
+        })
+    except Exception as e:
+        log.warning(f"ai_answer log (chat) failed: {e}")
+
     return {"conversation_id": conversation_id, "reply": reply, "meta": meta}
 
 
@@ -544,6 +570,28 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
             )
         except Exception as e:
             log.warning(f"chronicle narrative append failed: {e}")
+
+    # Persist agent turn as training data (ai_answer row).
+    try:
+        await db.chronicle_entries.insert_one({
+            "id": f"chr_{uuid.uuid4().hex[:12]}",
+            "kind": "ai_answer",
+            "scope": "agent",
+            "project_id": project_id or "",
+            "session_id": conversation_id,
+            "user_id": user["user_id"],
+            "prompt": (message or "")[:2000],
+            "response": (final_summary or "")[:6000],
+            "model": "agent-loop",
+            "provider": "multi",
+            "verdict": done_reason or "unknown",
+            "steps_taken": len(steps),
+            "tool_names": [s.get("tool") for s in steps if s.get("tool")][:20],
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "signer": "J",
+        })
+    except Exception as e:
+        log.warning(f"ai_answer log (agent) failed: {e}")
 
     return {
         "conversation_id": conversation_id,

@@ -8,15 +8,29 @@
 - POST /api/knowledge/recall                             (semantic recall for UI debug)
 - GET  /api/knowledge/categories
 - GET  /api/knowledge/stats
+- GET  /api/knowledge/export?format=openai_sft           (streams JSONL, one row per fact)
+- GET  /api/training/dpo?format=dpo                      (streams JSONL of chronicle ai_answer pairs)
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from deps import db, get_current_user, TAVILY_API_KEY
 from core import knowledge as km
 
 router = APIRouter()
+
+
+def _read_agents_md() -> str:
+    """Load AGENTS.md as the SFT system prompt; fall back to a stub if missing."""
+    p = Path("/app/AGENTS.md")
+    if p.exists():
+        return p.read_text()
+    return "You are J. Sardonic, capable, kind. Full Five Masters gauntlet on all code."
 
 
 # Ensure indexes on first request per process (idempotent — cheap).
@@ -125,3 +139,115 @@ async def knowledge_recall(payload: dict, _user: dict = Depends(get_current_user
     category = (payload or {}).get("category")
     hits = await km.recall(db, query, k=k, category=category)
     return {"query": query, "hits": hits, "count": len(hits)}
+
+
+
+# ---------- Training-data exports -----------------------------------------
+#
+# These endpoints turn J's runtime substrate into a proper training corpus.
+# Two shapes:
+#
+#   openai_sft  — one JSONL row per J:MIND fact, in OpenAI fine-tune format
+#                 {"messages":[{system: AGENTS.md}, {user: "..."}, {assistant: "..."}]}
+#
+#   dpo         — one JSONL row per chronicle ai_answer (preferred pattern for
+#                 preference learning; we emit chosen=response, rejected=null
+#                 today, but the schema is DPO-ready for when we start capturing
+#                 pre-CIG drafts too).
+#
+# Both stream to keep memory flat.
+
+@router.get("/knowledge/export")
+async def knowledge_export(
+    format: str = "openai_sft",
+    category: str | None = None,
+    _user: dict = Depends(get_current_user),
+):
+    """Stream J:MIND facts as JSONL training data."""
+    if format not in {"openai_sft", "raw"}:
+        raise HTTPException(status_code=400, detail=f"unknown format: {format}")
+    await _ensure_ready()
+    system_prompt = _read_agents_md() if format == "openai_sft" else ""
+
+    query: dict = {}
+    if category:
+        query["category"] = category
+
+    async def gen():
+        async for doc in db.knowledge_facts.find(query, {"_id": 0, "embedding": 0}):
+            if format == "openai_sft":
+                # Build a (user, assistant) pair from the fact. The "user" side
+                # reconstructs a plausible query that would surface this fact;
+                # `source_query` is the actual prior search that captured it.
+                user_msg = doc.get("source_query") or f"Tell me about: {doc.get('title', '')}"
+                assistant_msg = f"{doc.get('title', '')}\n\n{doc.get('body', '')}"
+                src = doc.get("source_url", "")
+                if src:
+                    assistant_msg += f"\n\nSource: {src}"
+                row = {"messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_msg},
+                    {"role": "assistant", "content": assistant_msg},
+                ], "metadata": {
+                    "id": doc.get("id"), "category": doc.get("category"),
+                    "tags": doc.get("tags", []), "source_url": src,
+                }}
+            else:  # raw
+                row = doc
+            yield json.dumps(row, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        gen(), media_type="application/x-ndjson",
+        headers={"Content-Disposition":
+                 f'attachment; filename="j_mind_{format}.jsonl"'},
+    )
+
+
+@router.get("/training/dpo")
+async def training_dpo_export(
+    scope: str | None = None,   # "chat" | "agent" | None (both)
+    since: str | None = None,   # ISO date string; only entries after this ts
+    _user: dict = Depends(get_current_user),
+):
+    """Stream chronicle ai_answer rows as DPO-shaped JSONL.
+
+    Emits: {"prompt": <user_msg>, "chosen": <J response>, "rejected": null,
+             "meta": {model, provider, verdict, scope, ts}}
+
+    Today `rejected` is always null. When we start capturing pre-CIG raw drafts,
+    that field will hold them; the schema is already right so no consumer
+    change is needed downstream.
+    """
+    query: dict = {"kind": "ai_answer"}
+    if scope:
+        query["scope"] = scope
+    if since:
+        query["ts"] = {"$gte": since}
+
+    async def gen():
+        async for doc in db.chronicle_entries.find(query, {"_id": 0}):
+            if not doc.get("prompt") or not doc.get("response"):
+                continue
+            if doc.get("verdict") == "offline":
+                continue  # never train on offline stubs
+            row = {
+                "prompt": doc["prompt"],
+                "chosen": doc["response"],
+                "rejected": doc.get("rejected_response"),  # placeholder
+                "meta": {
+                    "id": doc.get("id"),
+                    "model": doc.get("model"),
+                    "provider": doc.get("provider"),
+                    "verdict": doc.get("verdict"),
+                    "scope": doc.get("scope"),
+                    "steps_taken": doc.get("steps_taken"),
+                    "tool_names": doc.get("tool_names", []),
+                    "ts": doc.get("ts"),
+                },
+            }
+            yield json.dumps(row, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        gen(), media_type="application/x-ndjson",
+        headers={"Content-Disposition": 'attachment; filename="j_dpo.jsonl"'},
+    )
