@@ -93,7 +93,7 @@ async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
-    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=60.0)
+    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=120.0)
     resp = await client_ai.chat.completions.create(
         model=model,
         messages=[
