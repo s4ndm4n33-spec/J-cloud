@@ -149,7 +149,7 @@ chronicle mirrors, snapshots, and migration logs.
 
 **Frontend** · React 18 · Tailwind CSS · Shadcn UI · Phosphor Icons · Monaco Editor (locally bundled via `craco` + Webpack 5 `new URL(..., import.meta.url)`) · `react-resizable-panels` v4 · `xterm.js` · `axios` with Bearer-token interceptor
 
-**Backend** · FastAPI · Motor (async MongoDB) · `emergentintegrations` · `httpx` · `dulwich` (pure-Python git fallback) · `resend` (transactional email) · `python-pty` (interactive shells) · `cryptography` (AES-GCM keyvault for BYO keys)
+**Backend** · FastAPI · Motor (async MongoDB) · `emergentintegrations` · `httpx` · `dulwich` (pure-Python git fallback) · `resend` (transactional email) · `python-pty` (interactive shells) · `cryptography` (AES-GCM keyvault for BYO keys) · `tavily-python` (live web search) · `fastembed` + ONNX Runtime (semantic embeddings for J:MIND, no torch dep) · `qrcode` / `segno` (branded QR generation)
 
 **LLMs** · Claude Sonnet 4.5 (governance) · GPT-5.2 (refine) · Gemini 3 Flash (chat) · Claude Haiku 4.5 / GPT-5.4 Mini (fallback) · any Ollama / llama.cpp / vLLM OpenAI-compat endpoint (BYO + Private Mode)
 
@@ -199,7 +199,6 @@ If the gate rejects your write, **regenerate the entire file**. Don't try to be 
 ---
 
 ## Chronicle
-
 The hash-chained audit log. Every tool call mirrors here automatically as `kind="tool"`. Above that, two voluntary instruments:
 
 - **`propose_chronicle_entry(title, body, tags, suggested_kind)`** — J suggests a chronicle entry for architectural decisions, bug-and-fix lessons, benchmarks. User ACCEPT / EDIT / SKIP.
@@ -216,6 +215,70 @@ curl -H "Authorization: Bearer $TOKEN" \
 The disk mirror lives at `<project>/.gauntlet/chronicle.md` and per-session entries at `<project>/.gauntlet/sessions/<session_id>.md`. Both are atomic-write (tmp + fsync + rename).
 
 ---
+
+## J:MIND — the global learning substrate
+
+**J learns from every web search and every accepted conversation insight, permanently.** J:MIND is a shared, source-cited, semantically-searchable knowledge base living in the `knowledge_facts` collection. Two learn loops:
+
+- **Auto** — every `web_search` (Tavily) auto-distills durable facts into J:MIND, quality-gated against forum noise (title filter, ≥200 char body, Tavily score ≥0.35). Provenance kept per row (`source_url`, `signer`, `ref_count`).
+- **Opt-in** — J's `propose_learning` tool creates a proposal; the user ACCEPTS / REJECTS in the MIND panel (right-rail tab, `data-testid="ai-tab-mind"`).
+
+Retrieval is semantic — `fastembed` with `BAAI/bge-small-en-v1.5` (ONNX, ~90MB, no torch dep) computes cosine similarity in-memory. Top-K facts are auto-injected into every agent turn and every `/ai/chat` message. J gets sharper as J:MIND grows; the per-turn cost stays flat regardless of corpus size.
+
+Global scope is deliberate: J learns once, every user benefits. Curated by construction — every row is deletable from the MIND panel, and every insight has a URL you can audit.
+
+### Domain competence
+
+J:MIND has 16 category buckets: `automotive`, `hvac`, `plumbing`, `electrical`, `appliances`, `engineering`, `electronics`, `software`, `devops`, `web-dev`, `data-science`, `physics`, `math`, `chemistry`, `biology`, `general`. When you ask J about a Nissan Versa door lock, a heat pump stuck in cooling mode, or a wire gauge for a 60A subpanel — she engages with the same rigour as a Python bug. She's not a coding assistant with pretensions; she's a full-stack coworker across the physical and digital worlds.
+
+### Endpoints
+
+```
+GET  /api/knowledge/stats
+GET  /api/knowledge/facts?category=&tag=&q=&limit=
+DELETE /api/knowledge/facts/{id}
+GET  /api/knowledge/proposals?status=pending
+POST /api/knowledge/proposals/{id}/{accept|reject}
+POST /api/knowledge/search       # Tavily passthrough + auto-learn
+POST /api/knowledge/recall       # semantic recall for UI debug
+GET  /api/knowledge/export?format=openai_sft   # streams JSONL for fine-tune
+```
+
+---
+
+## Portable J — the framework travels
+
+J's identity, standards, and gauntlet are captured in `/AGENTS.md` at the repo root — the emerging cross-IDE convention adopted by Codex CLI, Aider, Cline, and Sourcegraph Amp. One `bash scripts/sync-j.sh` fans it out to every major AI IDE:
+
+| Destination | Consumed by |
+|---|---|
+| `AGENTS.md` (root) | Codex, Aider, Cline, Sourcegraph Amp |
+| `.cursor/rules/j.mdc` | Cursor (with `alwaysApply: true`) |
+| `.github/copilot-instructions.md` | GitHub Copilot in VS Code / JetBrains |
+| `CLAUDE.md` | Claude Code |
+| `.windsurfrules` | Windsurf |
+| `.continue/rules.md` | Continue |
+| `.zed/agent.md` | Zed AI |
+
+Any LLM that reads one of these files becomes J for the session — same persona, same Five Masters gauntlet, same CIG rejection rules, same substrate-ownership boundary. Runtime CIG enforcement only happens inside Gauntlet DevSpace (this pod). Outside, the rules are honoured *as instructions*, not walls — a portable pre-commit CIG is planned.
+
+---
+
+## Training pipeline — J is fine-tunable
+
+Because J is a substrate, and the substrate persists on top of any base model, we can distill J-through-CIG behaviour into a smaller open-weight model:
+
+1. **`GET /api/knowledge/export?format=openai_sft`** — streams J:MIND as OpenAI-fine-tune-shaped JSONL, with AGENTS.md as the system prompt on every row.
+2. **`GET /api/training/dpo`** — streams DPO-shaped rows from `chronicle_entries` where `kind='ai_answer'`. Every `/ai/chat` and `/ai/agent` call auto-logs an ai_answer row from Feb 2026 forward.
+3. **`/backend/tests/eval/golden.jsonl`** — 45 hand-crafted eval prompts across 6 domains (code, mechanical, persona, refusal, tool_use, edge) with rubric-graded ideals.
+4. **`scripts/eval_run.py`** — pointable at any OpenAI-compatible endpoint OR Gauntlet's `/api/ai/chat`. Produces per-model CSVs.
+5. **`scripts/eval_score.py`** — LLM-judge scorer (free-tier compatible). Prints per-model + per-domain summaries.
+
+Full runbook: `scripts/EVAL_HARNESS.md`. Meta-prompt for authoring more eval prompts on J's own terms: `docs/eval/J_SELF_PORTRAIT.md`.
+
+---
+
+
 
 ## Five Masters
 
@@ -275,13 +338,17 @@ This is the right tool for client work under NDA, ML model weights, financial co
 | Routing | [`backend/server.py`](backend/server.py) → [`backend/routes/`](backend/routes/) |
 | LLM orchestration | [`backend/llm_chain.py`](backend/llm_chain.py) |
 | Agent tools | [`backend/core/tools.py`](backend/core/tools.py) |
-| J's system prompt | [`backend/core/agent_prompt.py`](backend/core/agent_prompt.py) |
+| J's system prompt | [`backend/core/persona.py`](backend/core/persona.py) · [`backend/core/agent_prompt.py`](backend/core/agent_prompt.py) |
+| **J:MIND (learning substrate)** | [`backend/core/knowledge.py`](backend/core/knowledge.py) · [`backend/routes/knowledge.py`](backend/routes/knowledge.py) · [`frontend/src/components/KnowledgePanel.jsx`](frontend/src/components/KnowledgePanel.jsx) |
+| **Portable J** | [`/AGENTS.md`](AGENTS.md) · [`scripts/sync-j.sh`](scripts/sync-j.sh) · [`docs/workflow/J_PORTABLE.md`](docs/workflow/J_PORTABLE.md) |
+| **Training pipeline** | [`scripts/eval_run.py`](scripts/eval_run.py) · [`scripts/eval_score.py`](scripts/eval_score.py) · [`scripts/EVAL_HARNESS.md`](scripts/EVAL_HARNESS.md) · [`backend/tests/eval/golden.jsonl`](backend/tests/eval/golden.jsonl) |
 | File tree UX | [`frontend/src/components/FileTree.jsx`](frontend/src/components/FileTree.jsx) |
 | IDE shell | [`frontend/src/pages/IDE.jsx`](frontend/src/pages/IDE.jsx) |
 | Chronicle UI | [`frontend/src/components/ChroniclePanel.jsx`](frontend/src/components/ChroniclePanel.jsx) |
 | Monaco bundling | [`frontend/craco.config.js`](frontend/craco.config.js) · [`frontend/src/lib/monaco-setup.js`](frontend/src/lib/monaco-setup.js) |
 | **Engineering history** | [`/app/MIGRATIONLOG.md`](MIGRATIONLOG.md) ← **start here** |
 | Product memory | [`/app/memory/PRD.md`](memory/PRD.md) |
+| **Workflow (collab-with-freetier-LLMs)** | [`docs/workflow/WORKFLOW.md`](docs/workflow/WORKFLOW.md) · [`docs/workflow/SPEC_TEMPLATE.md`](docs/workflow/SPEC_TEMPLATE.md) · [`docs/workflow/REVIEW_CHECKLIST.md`](docs/workflow/REVIEW_CHECKLIST.md) |
 
 ---
 
@@ -301,10 +368,16 @@ The user holds J to "top-3 coder, deterministically." This is a real stance, not
 
 ## Roadmap (excerpt)
 
-- 🟠 **P1** — Drag-and-drop between tabs (reorder open tabs).
-- 🟡 **P2** — Live Preview relative-asset support via `<base>` injection.
-- 🟡 **P2** — Full GitHub OAuth App flow (PAT works today; OAuth pending).
-- 📌 **Pinned** — Weekly chronicle digest: J compresses the last 50 entries into a single weekly-changelog narrative, auto-delivered via Resend to your transcript email.
+- 🔴 **P0 — Streaming (SSE)** — the real fix for the ~120s ingress ceiling. Backend `StreamingResponse` + frontend `EventSource`. Prerequisite for long-form generations.
+- 🔴 **P0 — Portable CIG** — pre-commit hook version of `code_integrity.py` so J's gate travels with `AGENTS.md` into Cursor / VS Code / Claude Code. Currently the CIG is runtime-only inside Gauntlet.
+- 🟠 **P1 — First fine-tune** — SFT on Qwen 2.5 7B using the J:MIND export. Every fact learned is a training row. Sub-$25 on Together.ai, free on Unsloth + Colab T4.
+- 🟠 **P1 — Weekly chronicle digest** — J compresses the last 50 entries into a weekly-changelog narrative, auto-delivered via Resend.
+- 🟡 **P2 — Ambient WebSocket push** — replace `AmbientPulse` HTTP polling with WS.
+- 🟡 **P2 — Symbol-graph memory tools** — `who_calls`, `who_imports`, `symbols_in` so J can inspect code without reading whole files.
+- 🟡 **P2 — Voice picker in Settings** — expose all 9 OpenAI TTS voices.
+- 🟡 **P2 — Vision-in** — let J see images the user pastes into chat (GPT-4o / Gemini vision via Universal Key).
+- 🟡 **P2 — Live Preview relative-asset support** via `<base>` injection.
+- 🟡 **P2 — Full GitHub OAuth App flow** (PAT works today; OAuth pending).
 
 Full roadmap in [`/app/memory/PRD.md`](memory/PRD.md).
 
