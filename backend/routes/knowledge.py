@@ -205,47 +205,83 @@ async def knowledge_export(
 
 @router.get("/training/dpo")
 async def training_dpo_export(
-    scope: str | None = None,   # "chat" | "agent" | None (both)
+    scope: str | None = None,   # "chat" | "agent" | "web" | None (all)
     since: str | None = None,   # ISO date string; only entries after this ts
     _user: dict = Depends(get_current_user),
 ):
-    """Stream chronicle ai_answer rows as DPO-shaped JSONL.
+    """Stream DPO-shaped JSONL from two sources:
 
-    Emits: {"prompt": <user_msg>, "chosen": <J response>, "rejected": null,
-             "meta": {model, provider, verdict, scope, ts}}
+    1. Chronicle `ai_answer` rows — {prompt: user_msg, chosen: J-response,
+       rejected: null (placeholder for pre-CIG drafts)}.
+    2. `knowledge_dpo_candidates` — auto-stashed rejected Tavily results
+       paired against every kept fact from the same web_search.  chosen =
+       the accepted fact's body, rejected = the low-quality candidate.
 
-    Today `rejected` is always null. When we start capturing pre-CIG raw drafts,
-    that field will hold them; the schema is already right so no consumer
-    change is needed downstream.
+    Every web_search now generates real DPO preference pairs. No synthetic
+    negatives — the "rejected" side is real forum/thin/low-score content.
     """
-    query: dict = {"kind": "ai_answer"}
-    if scope:
-        query["scope"] = scope
-    if since:
-        query["ts"] = {"$gte": since}
+    await _ensure_ready()
 
     async def gen():
-        async for doc in db.chronicle_entries.find(query, {"_id": 0}):
-            if not doc.get("prompt") or not doc.get("response"):
-                continue
-            if doc.get("verdict") == "offline":
-                continue  # never train on offline stubs
-            row = {
-                "prompt": doc["prompt"],
-                "chosen": doc["response"],
-                "rejected": doc.get("rejected_response"),  # placeholder
-                "meta": {
-                    "id": doc.get("id"),
-                    "model": doc.get("model"),
-                    "provider": doc.get("provider"),
-                    "verdict": doc.get("verdict"),
-                    "scope": doc.get("scope"),
-                    "steps_taken": doc.get("steps_taken"),
-                    "tool_names": doc.get("tool_names", []),
-                    "ts": doc.get("ts"),
-                },
-            }
-            yield json.dumps(row, ensure_ascii=False) + "\n"
+        # Source 1: chronicle ai_answer rows
+        if scope in (None, "chat", "agent"):
+            q1: dict = {"kind": "ai_answer"}
+            if scope:
+                q1["scope"] = scope
+            if since:
+                q1["ts"] = {"$gte": since}
+            async for doc in db.chronicle_entries.find(q1, {"_id": 0}):
+                if not doc.get("prompt") or not doc.get("response"):
+                    continue
+                if doc.get("verdict") == "offline":
+                    continue
+                yield json.dumps({
+                    "prompt": doc["prompt"],
+                    "chosen": doc["response"],
+                    "rejected": doc.get("rejected_response"),
+                    "meta": {
+                        "id": doc.get("id"),
+                        "source": "chronicle",
+                        "model": doc.get("model"),
+                        "provider": doc.get("provider"),
+                        "verdict": doc.get("verdict"),
+                        "scope": doc.get("scope"),
+                        "steps_taken": doc.get("steps_taken"),
+                        "tool_names": doc.get("tool_names", []),
+                        "ts": doc.get("ts"),
+                    },
+                }, ensure_ascii=False) + "\n"
+
+        # Source 2: web_search DPO candidates (chosen fact + rejected Tavily result)
+        if scope in (None, "web"):
+            q2: dict = {}
+            if since:
+                q2["ts"] = {"$gte": since}
+            async for doc in db.knowledge_dpo_candidates.find(q2, {"_id": 0}):
+                # Pull the chosen fact body to fill the pair
+                fact = await db.knowledge_facts.find_one(
+                    {"id": doc.get("chosen_fact_id")},
+                    {"_id": 0, "title": 1, "body": 1, "source_url": 1},
+                )
+                if not fact:
+                    continue
+                chosen = f"{fact.get('title', '')}\n\n{fact.get('body', '')}"
+                rejected = f"{doc.get('rejected_title', '')}\n\n{doc.get('rejected_body', '')}"
+                yield json.dumps({
+                    "prompt": doc.get("query", ""),
+                    "chosen": chosen,
+                    "rejected": rejected,
+                    "meta": {
+                        "id": doc.get("id"),
+                        "source": "web_search",
+                        "category": doc.get("category"),
+                        "reject_reason": doc.get("reject_reason"),
+                        "chosen_source_url": fact.get("source_url"),
+                        "rejected_source_url": doc.get("rejected_url"),
+                        "rejected_tavily_score": doc.get("rejected_tavily_score"),
+                        "ts": doc.get("ts"),
+                    },
+                }, ensure_ascii=False) + "\n"
 
     return StreamingResponse(
         gen(), media_type="application/x-ndjson",

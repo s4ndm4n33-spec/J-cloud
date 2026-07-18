@@ -143,6 +143,44 @@ async def _ensure_indexes(db) -> None:
     await db.knowledge_proposals.create_index([("id", 1)], unique=True)
     await db.knowledge_proposals.create_index([("status", 1), ("ts", -1)])
     await db.knowledge_search_log.create_index([("ts", -1)])
+    # DPO candidates: rejected Tavily results kept for preference-pair training.
+    await db.knowledge_dpo_candidates.create_index([("ts", -1)])
+    await db.knowledge_dpo_candidates.create_index([("chosen_fact_id", 1)])
+
+
+# ---------- Freshness / time-decay -----------------------------------------
+#
+# In engineering / mechanical / automotive knowledge, staleness is a safety
+# issue — a 2004 torque spec vs a 2025 recall notice deserve different
+# weight in retrieval. We store an ISO ts on every fact and derive a
+# freshness multiplier at recall time.  Fresh (< 30 days) → 1.0.
+# Older facts decay LINEARLY to 0.3 over 180 days, then floor there — we
+# never actively delete based on age; we just quiet stale rows in ranking.
+# `ref_count` bumps reset ts_last_seen, so a fact that keeps getting
+# re-discovered stays fresh naturally.
+
+FRESHNESS_FLOOR = 0.3
+FRESHNESS_FULL_DAYS = 30
+FRESHNESS_DECAY_DAYS = 180
+
+
+def _freshness_score(ts_last_seen_iso: str) -> float:
+    """Return 1.0 for fresh facts, decaying linearly to FRESHNESS_FLOOR over ~180d."""
+    if not ts_last_seen_iso:
+        return FRESHNESS_FLOOR
+    try:
+        ts = datetime.fromisoformat(ts_last_seen_iso.replace("Z", "+00:00"))
+    except Exception:
+        return FRESHNESS_FLOOR
+    age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    if age_days <= FRESHNESS_FULL_DAYS:
+        return 1.0
+    if age_days >= FRESHNESS_DECAY_DAYS:
+        return FRESHNESS_FLOOR
+    # Linear decay between 30d (1.0) and 180d (FLOOR).
+    span = FRESHNESS_DECAY_DAYS - FRESHNESS_FULL_DAYS
+    frac = (age_days - FRESHNESS_FULL_DAYS) / span
+    return 1.0 - (1.0 - FRESHNESS_FLOOR) * frac
 
 
 async def add_fact(
@@ -251,7 +289,7 @@ async def recall(
     if category:
         base_filter["category"] = category
 
-    # Path A — embedding cosine.
+    # Path A — embedding cosine, blended with freshness.
     try:
         [qvec] = await embed([q])
         # Pull up to 500 candidates (cheap because we don't return the payload
@@ -259,20 +297,30 @@ async def recall(
         candidates = await db.knowledge_facts.find(
             base_filter, {"_id": 0, "id": 1, "title": 1, "body": 1,
                           "category": 1, "tags": 1, "source_url": 1,
-                          "embedding": 1, "ref_count": 1},
+                          "embedding": 1, "ref_count": 1,
+                          "ts_last_seen": 1, "ts": 1},
         ).to_list(500)
         if candidates:
             qv = np.asarray(qvec, dtype=np.float32)
-            scored: list[tuple[float, dict]] = []
+            scored: list[tuple[float, float, dict]] = []
             for c in candidates:
                 emb = c.pop("embedding", None)
                 if not emb:
                     continue
                 vv = np.asarray(emb, dtype=np.float32)
-                score = float(np.dot(qv, vv))
-                scored.append((score, c))
+                cosine = float(np.dot(qv, vv))
+                # Blend cosine with freshness. Fresh facts unchanged; stale
+                # facts quieted by up to 30% at the floor. Never zeroed out —
+                # a highly-relevant old fact still surfaces if nothing fresher
+                # exists.
+                fresh = _freshness_score(c.get("ts_last_seen") or c.get("ts", ""))
+                blended = cosine * (0.7 + 0.3 * fresh)
+                scored.append((blended, cosine, c))
             scored.sort(key=lambda x: x[0], reverse=True)
-            return [{**c, "score": round(s, 4)} for s, c in scored[:k] if s > 0.15]
+            return [
+                {**c, "score": round(cos, 4), "blended_score": round(bl, 4)}
+                for bl, cos, c in scored[:k] if bl > 0.15
+            ]
     except Exception:
         pass  # fall through to text search
 
@@ -466,25 +514,43 @@ async def auto_learn_from_search(
     # Deterministic fallback — one fact per top result, with quality gate.
     # Global scope means noise compounds: reject forum/community/social-style
     # titles, require decent content length, and prefer high-score Tavily hits.
+    # Rejected candidates are NOT discarded — they get stashed in
+    # `knowledge_dpo_candidates` as future DPO training material (chosen = a
+    # kept fact, rejected = these forum/thin/low-score results).
     _JUNK_TITLE_TOKENS = (
         "forum", "community of", "reddit", "r/", "subreddit", "discussion",
         "youtube", "tiktok", "instagram", "facebook", "twitter",
     )
+    kept_fact_ids: list[str] = []
+    rejected_pool: list[dict] = []
     kept = 0
     for r in results[:5]:
-        if kept >= 3:
-            break
         title = (r.get("title") or "").strip()
         body = (r.get("content") or "").strip()
         score = float(r.get("score") or 0.0)
         low_title = title.lower()
-        # Quality gates
+
+        # Decide accept vs reject; stash rejects for DPO regardless of quota.
+        reject_reason = None
         if len(body) < 200:
+            reject_reason = "body_too_short"
+        elif score and score < 0.35:
+            reject_reason = "low_tavily_score"
+        elif any(t in low_title for t in _JUNK_TITLE_TOKENS):
+            reject_reason = "junk_title"
+        elif kept >= 3:
+            reject_reason = "quota_exceeded"
+
+        if reject_reason:
+            rejected_pool.append({
+                "title": title[:200],
+                "body": body[:1500],
+                "url": r.get("url", ""),
+                "tavily_score": score,
+                "reject_reason": reject_reason,
+            })
             continue
-        if score and score < 0.35:
-            continue
-        if any(t in low_title for t in _JUNK_TITLE_TOKENS):
-            continue
+
         # Trim body to first ~800 chars but at a sentence boundary
         body_trim = body[:800]
         cut = body_trim.rfind(". ")
@@ -503,8 +569,43 @@ async def auto_learn_from_search(
         if add.get("ok") and not add.get("deduped"):
             learned += 1
             kept += 1
+            if add.get("id"):
+                kept_fact_ids.append(add["id"])
 
-    return {"learned": learned, "category": category, "mode": "deterministic"}
+    # Stash rejected candidates against every fact we kept — free DPO pairs.
+    # Each rejected item is paired with each chosen fact from the same search,
+    # so a single search with 3 chosen and 2 rejected yields 6 preference
+    # rows. Storage is cheap; the training signal compounds.
+    if rejected_pool and kept_fact_ids:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        dpo_docs = []
+        for chosen_id in kept_fact_ids:
+            for rej in rejected_pool:
+                dpo_docs.append({
+                    "id": f"dpo_{uuid.uuid4().hex[:12]}",
+                    "query": query,
+                    "category": category,
+                    "chosen_fact_id": chosen_id,
+                    "rejected_title": rej["title"],
+                    "rejected_body": rej["body"],
+                    "rejected_url": rej["url"],
+                    "rejected_tavily_score": rej["tavily_score"],
+                    "reject_reason": rej["reject_reason"],
+                    "ts": now_iso,
+                })
+        if dpo_docs:
+            try:
+                await db.knowledge_dpo_candidates.insert_many(dpo_docs, ordered=False)
+            except Exception:
+                pass  # non-critical — never let DPO stash break the learn path
+
+    return {
+        "learned": learned,
+        "category": category,
+        "mode": "deterministic",
+        "dpo_pairs_stashed": len(rejected_pool) * len(kept_fact_ids)
+        if rejected_pool and kept_fact_ids else 0,
+    }
 
 
 def format_recall_for_prompt(recalls: list[dict[str, Any]]) -> str:
