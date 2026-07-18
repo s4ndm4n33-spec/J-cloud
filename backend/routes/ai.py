@@ -377,6 +377,13 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     steps: list[dict[str, Any]] = []
     done_reason: Optional[str] = None
     final_summary = ""
+    # Track consecutive turns without tool calls. In AUTO MODE we tolerate 1
+    # thinking-out-loud turn (nudge J to continue), then break on the 2nd to
+    # avoid infinite prose loops. In non-AUTO, first empty-tool turn breaks
+    # immediately, preserving the previous "single-shot with optional tools"
+    # behavior for interactive chat.
+    no_tool_streak = 0
+    NO_TOOL_STREAK_MAX = 2 if auto_mode else 1
 
     for step_idx in range(max_steps):
         user_text = "\n\n".join(transcript_for_llm) + "\n\n[J]\n"
@@ -396,9 +403,22 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
         transcript_for_llm.append(f"[J]\n{reply}")
 
         if not calls:
+            no_tool_streak += 1
+            if auto_mode and no_tool_streak < NO_TOOL_STREAK_MAX:
+                # J emitted prose without a tool call — probably thinking out
+                # loud between actions. Nudge and continue rather than stop.
+                nudge = (
+                    "[AUTO MODE — no tool call detected in your last message.\n"
+                    " If your plan has more steps, invoke the next tool now.\n"
+                    " If you are TRULY finished, invoke the `done` tool with a\n"
+                    " summary. Do NOT stop mid-task by writing prose only.]"
+                )
+                transcript_for_llm.append(nudge)
+                continue
             done_reason = "no_tool_calls"
             final_summary = prose
             break
+        no_tool_streak = 0  # reset on any tool-using turn
 
         ask_user_question: Optional[str] = None
         is_done = False

@@ -18,6 +18,97 @@
 
 ---
 
+
+## 2026-07-17 05:00 UTC · J:MIND + portable J + training pipeline + AUTO MODE fix + CIG HTML fix — signed: J (E1 orchestrator via Emergent)
+
+### What broke, was missing, or was overdue
+Five distinct pieces of work in one session, all interlocking. The umbrella theme: **the moment J was expected to be more than an autocomplete, the substrate had to grow to match.** Bug fixes made her reliable; J:MIND made her retentive; portable-J made her transferable; the training pipeline made her forkable; AUTO MODE made her actually autonomous.
+
+### What shipped
+
+**1. CIG HTML rejection — FIXED** (`backend/core/code_integrity.py`)
+`check_eof_completeness` flagged every file ending with `>` (i.e. every `</html>`) as mid-expression truncation. J physically could not write a valid HTML file. Fix: skip cliff-EOF check for `html/markdown/css/yaml/text`. Also **extended** `TRUNCATION_PATTERNS` to catch `<!-- rest of file unchanged -->` style markers — safeguard broadened, not weakened. Coverage: `backend/tests/test_code_integrity_html.py` (6/6).
+
+**2. Mobile SEND button — FIXED** (`frontend/src/components/AICoworker.jsx:312`)
+`onClick={send}` was passing the SyntheticEvent as the message text. Fix: `onClick={() => send()}`. Verified at 390×844 and 1920×1080.
+
+**3. J:MIND — the global learning substrate** — NEW (major)
+Two-tier persistent knowledge store with semantic recall:
+- `core/knowledge.py` — Mongo `knowledge_facts` + `knowledge_proposals` + `knowledge_search_log`. `fastembed` (`BAAI/bge-small-en-v1.5`, ONNX, ~90MB, no torch dep) for embeddings; cosine similarity in Python over up-to-500 candidates per recall.
+- 16 domain categories (`automotive`, `hvac`, `plumbing`, `electrical`, `appliances`, `engineering`, `electronics`, `software`, `devops`, `web-dev`, `data-science`, `physics`, `math`, `chemistry`, `biology`, `general`).
+- Auto-learn from `web_search` (Tavily) with quality gates: reject forum/community titles, require ≥200 char body, require Tavily score ≥0.35. Global scope by design.
+- Opt-in learning via `propose_learning` tool → user reviews in the new MIND tab (accept / reject).
+- Endpoints: `/api/knowledge/{stats, facts, proposals, search, recall, categories, export}`.
+- Tools added to `core/tools.py`: `web_search`, `recall_knowledge`, `propose_learning`.
+- Persona expanded (`core/persona.py`) — J now explicitly claims + engages full-stack across automotive, HVAC, plumbing, electrical, appliances, engineering, electronics. Not a coding assistant with pretensions.
+- Agent loop pre-injects top-K semantic recall into every `/ai/chat` and `/ai/agent` context.
+
+**Live verification**: Nissan Versa 2015 door-lock actuator search → 3 automotive facts learned → recall of "door lock torque" returned top hit at 0.71 cosine. Production J:MIND grew from 14 → 177 facts organically during a subsequent eval session (chronos trace archived).
+
+**4. Portable J — the framework travels** — NEW
+`/AGENTS.md` at repo root becomes the canonical J-identity file. `bash scripts/sync-j.sh` fans it out to `.cursor/rules/j.mdc`, `.github/copilot-instructions.md`, `CLAUDE.md`, `.windsurfrules`, `.continue/rules.md`, `.zed/agent.md`. Any AI-IDE that clones the repo boots J as its assistant for the session. Substrate ownership rule codified: J's core modules (`code_integrity.py`, `persona.py`, `tools.py`, `knowledge.py`, `ambient.py`, `destructive.py`, `fivemasters.py`, `chronicle.py`, `routes/ai.py`, `routes/voice.py`) are E1-only. Free-tier LLMs stay in userland.
+
+**5. Training pipeline** — NEW
+- `POST /api/knowledge/export?format=openai_sft` streams J:MIND as OpenAI-fine-tune JSONL, with AGENTS.md as the system prompt on every row.
+- `POST /api/training/dpo` streams `chronicle_entries.kind=ai_answer` as DPO-shaped pairs. **Every `/ai/chat` and `/ai/agent` call now auto-logs an ai_answer row** — from this commit forward, every J session is training data.
+- Golden eval set: 45 prompts across 6 domains at `backend/tests/eval/golden.jsonl`, merged from three LLM drafts (Claude / GPT / replitJ-tutor), deduped by behavior signature, spec-balanced.
+- `scripts/eval_run.py` + `scripts/eval_score.py` — provider-agnostic harness (OpenAI-compatible OR Gauntlet's own `/ai/chat`), LLM-judge scoring, per-model + per-domain summaries.
+- `docs/eval/J_SELF_PORTRAIT.md` — J's own eval-writing brief for handing off to free-tier LLMs.
+
+**6. AUTO MODE pause — FIXED** (`backend/routes/ai.py`)
+Agent loop was breaking on any turn where J emitted prose without a tool call. Chronos trace from a 9-hour production session showed **229 `done` calls** as J kept prematurely stopping and being nudged back by the auto-verify gate. Fix: track `no_tool_streak`; in AUTO MODE, first empty-tool turn gets a nudge instruction, second breaks. Non-AUTO chat preserves single-shot behaviour. This is the difference between J being an autocomplete and a coworker.
+
+**7. Timeout bumps** — `llm_chain.py` client 60s → 120s; `aiChat` frontend timeout aligned to 180s to match `aiAgent`. Real fix for the ~120s ingress wall is streaming (P0 in the new roadmap); this is band-aid margin.
+
+**8. Workflow docs** — `docs/workflow/{WORKFLOW,SPEC_TEMPLATE,REVIEW_CHECKLIST,J_PORTABLE}.md`. Codifies the ME → E1 → free-tier → E1 → ME loop for scaling collaboration without giving up the standard.
+
+**9. QR codes** — `docs/media/qr/{blue-j-gauntlet,bluejgenesis}.{png,svg,-flat.png}`. Cyan-on-black, Level-H error correction, centred J emblem. Scans on modern phone cameras.
+
+### Files touched
+
+**Backend**:
+- `core/knowledge.py` (NEW, 415 lines)
+- `core/persona.py` (expanded — DOMAIN COMPETENCE + J:MIND directives)
+- `core/tools.py` (+3 tool handlers, +3 tool specs)
+- `core/code_integrity.py` (cliff-EOF skip for markup, extended truncation patterns)
+- `routes/knowledge.py` (NEW + export endpoints)
+- `routes/ai.py` (mind recall injection, ai_answer logging on both /chat and /agent, AUTO MODE nudge)
+- `llm_chain.py` (timeout 60 → 120)
+- `deps.py` (TAVILY_API_KEY)
+- `server.py` (mount knowledge router)
+- `.env` (+ TAVILY_API_KEY)
+
+**Frontend**:
+- `components/KnowledgePanel.jsx` (NEW, 3 sub-views: FACTS, PROPOSALS, TEACH)
+- `components/AICoworker.jsx` (MIND tab wiring, mobile SEND fix)
+- `lib/api.js` (knowledge API + aiChat timeout)
+
+**Docs / scaffolding**:
+- `AGENTS.md` (NEW, canonical)
+- `CLAUDE.md`, `.windsurfrules`, `.cursor/rules/j.mdc`, `.github/copilot-instructions.md`, `.continue/rules.md`, `.zed/agent.md` (synced)
+- `scripts/sync-j.sh`, `scripts/eval_run.py`, `scripts/eval_score.py`, `scripts/generate_qr.py`, `scripts/EVAL_HARNESS.md` (NEW)
+- `docs/workflow/{README,WORKFLOW,SPEC_TEMPLATE,REVIEW_CHECKLIST,J_PORTABLE}.md` (NEW)
+- `docs/eval/J_SELF_PORTRAIT.md` (NEW)
+- `backend/tests/eval/golden.jsonl` (NEW, 45 rows)
+- `backend/tests/test_knowledge_mind.py`, `test_code_integrity_html.py`, `test_training_export.py` (NEW)
+
+### Tests
+- `test_knowledge_mind.py` — 5/5 (categories, stats, search auto-learn + recall, category filter, proposals)
+- `test_code_integrity_html.py` — 6/6 (valid HTML, minimal HTML, truncation markers still caught, Python cliff still caught, markdown ending in `>`, empty rejected)
+- `test_training_export.py` — 4/4 + 1 conditionally skipped (SFT export shape, raw format, bad format 400, DPO export shape)
+- Testing agent iter8: **14/14 backend + 100% frontend**
+
+### Pitfalls / lessons
+- **Global-scope J:MIND compounds noise fast if the quality gate slackens.** Track *signal fraction*, not row count. At 90% signal J answers get sharper; at 60% signal recall poisons every turn. That's why the auto-learn gate rejects forum titles + short bodies + low Tavily scores.
+- **`check_eof_completeness` on `>` was a category error.** The rule was written for source languages where `>` means "greater-than / mid-expression"; it never should have applied to markup where `>` is a tag-close terminator. If a validator hits every valid file in a language, the rule is wrong, not the language.
+- **Chronicle didn't originally log `ai_answer` rows.** We were about to plan a DPO pipeline against zero data. The one-line addition to `/ai/chat` and `/ai/agent` was worth more than any downstream fine-tuning work — from this commit, every future J session is a training row.
+- **The 229 `done` calls in the chronos trace were the substrate telling us something.** Every doom-loop is a designed pattern begging to be fixed. J wasn't broken; the loop-exit condition was too eager. Watch the audit trail for *shape*, not just individual events.
+- **`emergentintegrations` doesn't cover embeddings.** We debated adding torch (~2GB dep bloat) vs asking for a separate OpenAI key. `fastembed` + ONNX Runtime (~100MB total) split the difference — real semantic embeddings, no external dependency, no torch. Same trick will work for any future ML-adjacent feature.
+- **Portable-J is CIG-as-instructions, not CIG-as-walls.** The runtime enforcement engine lives in `code_integrity.py` on this pod. In Cursor / Claude Code / anywhere else, AGENTS.md carries the *rules* but not the *enforcement*. A portable pre-commit CIG is the next real substrate work (see P0 in the new roadmap).
+
+---
+
+
 ## 2026-07-02 09:00 UTC · J v2 — auto-verify, ambient awareness, hands-free voice — signed: J (Claude Sonnet 4.5 via Universal Key)
 
 ### What broke (or was missing)
