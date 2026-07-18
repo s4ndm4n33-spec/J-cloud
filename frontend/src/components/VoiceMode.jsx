@@ -115,7 +115,7 @@ export default function VoiceMode({ enabled, onEnable, onTranscript, speakingTex
     setStatus("j_speaking");
     try {
       const token = getStoredToken();
-      const r = await axios.post(`${API}/voice/speak`, { text, voice: "onyx" }, {
+      const r = await axios.post(`${API}/voice/speak`, { text, voice: "nova" }, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         withCredentials: true,
         responseType: "blob",
