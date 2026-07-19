@@ -26,7 +26,7 @@ from core import chronicle as chron
 from core import ambient
 from core.ratelimit import set_owner_id as _set_rl_owner
 from routes import (
-    agents, ai, ambient as ambient_routes, audit, auth, chronicle,
+    admin, agents, ai, ambient as ambient_routes, audit, auth, chronicle,
     gauntlet, git_local, github, knowledge, projects, settings, terminal,
     uploads, voice,
 )
@@ -43,7 +43,7 @@ api = APIRouter(prefix="/api")
 for module in (
     auth, projects, gauntlet, terminal, git_local, settings,
     chronicle, ai, github, audit, uploads, agents, ambient_routes, voice,
-    knowledge,
+    knowledge, admin,
 ):
     api.include_router(module.router)
 

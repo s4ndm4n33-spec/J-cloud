@@ -402,6 +402,17 @@ export async function saveOllama(base_url, default_model) {
   })).data;
 }
 
+// ----- Owner-only admin (abuse-flag dashboard) -----
+export async function listAdminFlags({ limit = 100, category, user_id } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (category) params.set("category", category);
+  if (user_id) params.set("user_id", user_id);
+  return (await client.get(`/admin/flags?${params}`)).data;
+}
+export async function adminFlagsSummary() {
+  return (await client.get("/admin/flags/summary")).data;
+}
+
 // Set a cloud BYOK (openai / anthropic / gemini). Returns { ok, provider, masked }.
 export async function saveProviderKey(provider, api_key) {
   return (await client.put("/settings/keys", { provider, api_key })).data;

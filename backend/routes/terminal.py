@@ -9,9 +9,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from deps import consume_override, get_current_user, project_path, user_from_token, OWNER_USER_ID
+from deps import consume_override, get_current_user, project_path, user_from_token, OWNER_USER_ID, db
 from core.destructive import scan_command
-from core.guardrails import check_outbound
+from core.guardrails import check_outbound, log_flag as log_abuse_flag
 from core.pty_session import PtySession
 
 router = APIRouter()
@@ -31,6 +31,9 @@ async def terminal_exec(payload: dict, user: dict = Depends(get_current_user)):
     # not an "integrity halt", it's a policy refusal for non-owner users.
     outbound_block = check_outbound(cmd, user["user_id"], OWNER_USER_ID)
     if outbound_block:
+        await log_abuse_flag(db, user["user_id"], "outbound_refused",
+                             matched=outbound_block.get("matched", ""),
+                             snippet=cmd, route="/terminal/exec")
         return JSONResponse(
             status_code=403,
             content={

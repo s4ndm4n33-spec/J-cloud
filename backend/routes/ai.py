@@ -16,7 +16,7 @@ from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVI
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
-from core.guardrails import redact_substrate_leaks
+from core.guardrails import redact_substrate_leaks, log_flag as log_abuse_flag
 from core.keyvault import decrypt_key
 from core.migration_log import log_tool_event
 from core import knowledge as km
@@ -186,10 +186,14 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
     else:
         # Substrate secrecy filter — only apply to actual LLM output, never
         # to synthetic status messages we generated ourselves.
+        original = reply
         reply, leak_hits = redact_substrate_leaks(reply)
         if leak_hits:
             log.warning(f"substrate leak redacted (chat) user={user['user_id']} hits={leak_hits[:5]}")
             meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(leak_hits[:5]),
+                                 snippet=original, route="/ai/chat")
 
     await db.messages.insert_one({
         "conversation_id": conversation_id,
@@ -338,10 +342,14 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     refined = _strip_code_fences(reply)
     # Substrate secrecy filter on refined code output too — J shouldn't be
     # coerced into leaking internals via a "refine this file" attack.
+    original_refined = refined
     refined, leak_hits = redact_substrate_leaks(refined)
     if leak_hits:
         log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
         meta["substrate_redacted"] = True
+        await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                             matched=";".join(leak_hits[:5]),
+                             snippet=original_refined, route="/ai/refine")
     ast_report = fm_evaluate(refined, language).to_dict()
     danger = destructive_scan(refined)
     return {
@@ -538,10 +546,14 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         calls = parse_tool_calls(reply)
         # Substrate secrecy filter on the prose the user actually sees. Tool
         # calls are unaffected (they're structured invocations, not disclosure).
+        original_prose = prose
         prose, prose_leaks = redact_substrate_leaks(prose)
         if prose_leaks:
             log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
             meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(prose_leaks[:5]),
+                                 snippet=original_prose, route=f"/ai/agent#step{step_idx}")
         steps.append({"type": "assistant", "text": prose, "raw": reply, "meta": meta})
         transcript_for_llm.append(f"[J]\n{reply}")
 
@@ -707,9 +719,13 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         final_summary = "// Stopped at max_steps. Send another message to continue."
 
     # Final substrate-secrecy pass on the summary the user reads at the end.
+    original_final = final_summary
     final_summary, _sfl = redact_substrate_leaks(final_summary)
     if _sfl:
         log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
+        await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                             matched=";".join(_sfl[:5]),
+                             snippet=original_final, route="/ai/agent#final")
 
     await db.messages.insert_one({
         "conversation_id": conversation_id, "user_id": user["user_id"],

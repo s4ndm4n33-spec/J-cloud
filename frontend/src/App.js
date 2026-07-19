@@ -5,6 +5,7 @@ import "@/lib/monaco-setup"; // Force Monaco to use bundled copy (no CDN depende
 import SignIn from "@/pages/SignIn";
 import AuthCallback from "@/pages/AuthCallback";
 import IDE from "@/pages/IDE";
+import AdminPanel from "@/pages/AdminPanel";
 import { useAuth, AuthProvider } from "@/context/AuthContext";
 
 function ProtectedRoute({ children }) {
@@ -40,6 +41,14 @@ function AppRouter() {
         element={
           <ProtectedRoute>
             <IDE />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin"
+        element={
+          <ProtectedRoute>
+            <AdminPanel />
           </ProtectedRoute>
         }
       />

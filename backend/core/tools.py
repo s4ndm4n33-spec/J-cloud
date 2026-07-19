@@ -13,7 +13,7 @@ from typing import Any, Callable, Awaitable
 import httpx
 
 from .destructive import scan as destructive_scan, scan_command
-from .guardrails import check_outbound
+from .guardrails import check_outbound, log_flag
 
 
 # ---------- TOOL SPEC (advertised to the LLM) ----------
@@ -294,6 +294,11 @@ async def _tool_run_command(ctx: ToolContext, cmd: str, timeout: int = 120) -> d
     owner_id = _os.environ.get("OWNER_USER_ID", "").strip()
     outbound_block = check_outbound(cmd, getattr(ctx, "user_id", ""), owner_id)
     if outbound_block:
+        db = getattr(ctx, "db", None)
+        if db is not None:
+            await log_flag(db, getattr(ctx, "user_id", ""), "outbound_refused",
+                           matched=outbound_block.get("matched", ""),
+                           snippet=cmd, route="tool:run_command")
         return outbound_block
     matches = scan_command(cmd)
     if any(m.severity == "critical" for m in matches):
