@@ -13,6 +13,7 @@ from typing import Any, Callable, Awaitable
 import httpx
 
 from .destructive import scan as destructive_scan, scan_command
+from .guardrails import check_outbound
 
 
 # ---------- TOOL SPEC (advertised to the LLM) ----------
@@ -287,6 +288,13 @@ async def _tool_find_files(ctx: ToolContext, pattern: str) -> dict:
 
 async def _tool_run_command(ctx: ToolContext, cmd: str, timeout: int = 120) -> dict:
     timeout = max(1, min(int(timeout), 600))
+    # Owner-only wall on outbound-network commands. Non-owner users cannot
+    # send bytes to hosts J doesn't own — no exfil, no SSRF, no port scans.
+    import os as _os
+    owner_id = _os.environ.get("OWNER_USER_ID", "").strip()
+    outbound_block = check_outbound(cmd, getattr(ctx, "user_id", ""), owner_id)
+    if outbound_block:
+        return outbound_block
     matches = scan_command(cmd)
     if any(m.severity == "critical" for m in matches):
         return {"error": "BLOCKED — destructive pattern detected. Surface this to the user and request password override.",
