@@ -25,8 +25,8 @@ BASE_URL = (
     os.environ.get("REACT_APP_BACKEND_URL")
     or "https://gauntlet-devspace.preview.emergentagent.com"
 ).rstrip("/")
-TOKEN = "test_session_devspace_001"
-USER_ID = "user_test_devspace"
+TOKEN = "test_owner_session_001"
+USER_ID = "user_5d2818f635a9"
 
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "test_database")

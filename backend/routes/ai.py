@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY
+from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY, OWNER_USER_ID
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
@@ -156,6 +156,12 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-{conversation_id}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         reply = (
             "// J:OFFLINE — entire LLM failover chain exhausted.\n"
             "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
@@ -225,6 +231,12 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-refine-{uuid.uuid4().hex[:6]}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         raise HTTPException(status_code=502, detail={
             "message": "LLM failover chain exhausted",
             "attempts": meta["attempts"],
@@ -261,6 +273,12 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-gov-{uuid.uuid4().hex[:6]}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         return {
             "ast_report": ast_report,
             "llm_verdict": {
@@ -361,7 +379,12 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     # propose_learning can reach Mongo + Tavily without leaking creds through
     # tool args.
     ctx.db = db
-    ctx.tavily_key = TAVILY_API_KEY
+    # OWNER LOCK on shared Tavily key: only the app owner gets to spend the
+    # shared TAVILY_API_KEY on web_search. Everyone else runs with an empty
+    # tavily_key, which makes web_search fail cleanly with a "needs Tavily
+    # key" message. (Per-user Tavily BYOK is P1.)
+    _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    ctx.tavily_key = TAVILY_API_KEY if _is_owner else ""
 
     # --- J:MIND recall — inject top-K globally learned facts relevant to
     # the user's current message into her system context. This is the
@@ -392,6 +415,14 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
             f"{user['user_id']}-agent-{conversation_id}-{step_idx}",
         )
         if not meta["success"]:
+            if meta.get("needs_keys") and step_idx == 0:
+                # First turn already needs BYOK — bail early with 401 so the
+                # frontend can route the user to onboarding.
+                raise HTTPException(status_code=401, detail={
+                    "code": "needs_keys",
+                    "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                    "attempts": meta.get("attempts", []),
+                })
             done_reason = "llm_chain_exhausted"
             final_summary = "// J:OFFLINE — LLM chain exhausted. Configure provider keys in Settings."
             steps.append({"type": "assistant", "text": final_summary, "meta": meta})
@@ -633,12 +664,15 @@ async def ai_agent_history(conversation_id: str, user: dict = Depends(get_curren
 async def ai_chain(user: dict = Depends(get_current_user)):
     """Show the resolved failover chain for each task (which steps will actually run)."""
     private_mode = bool(user.get("private_mode", False))
+    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
     out: dict[str, list[dict]] = {}
     for task, steps in TASK_CHAINS.items():
         resolved = []
         for source, provider, model in steps:
             if source == "universal":
-                runnable = bool(EMERGENT_LLM_KEY)
+                # Owner lock: the shared Universal Key is only runnable by the
+                # app owner. Everyone else must BYOK — universal shows SKIP.
+                runnable = bool(EMERGENT_LLM_KEY) and is_owner
                 shown_model = model
             else:
                 cfg = await resolve_byok(user["user_id"], provider)
@@ -654,4 +688,4 @@ async def ai_chain(user: dict = Depends(get_current_user)):
                 "runnable": runnable,
             })
         out[task] = resolved
-    return {"chains": out, "private_mode": private_mode}
+    return {"chains": out, "private_mode": private_mode, "is_owner": is_owner}

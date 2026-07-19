@@ -143,3 +143,14 @@ See `/app/memory/test_credentials.md`.
 5. (P2) Ambient WebSocket push (replace `AmbientPulse` HTTP polling).
 6. (P2) Symbol graph memory tools (`who_calls`, `who_imports`, `symbols_in`).
 7. (P2) Voice picker in Settings — 9 OpenAI TTS voices.
+
+## 2026-07-19 — P0 Owner-Only Fallback Lock (API-drain fix)
+Public production users were freeloading on the owner's `EMERGENT_LLM_KEY` and `TAVILY_API_KEY`. Locked both:
+- **New env var** `OWNER_USER_ID=user_5d2818f635a9` in `/app/backend/.env` (exposed via `deps.OWNER_USER_ID`).
+- **`llm_chain.chain_call`**: strips `("universal", …)` steps from the failover chain when `user_id != OWNER_USER_ID`. Non-owners must have BYOK; if none configured, the chain returns empty with `meta.needs_keys=True`.
+- **`routes/ai.py`**: `/ai/chat`, `/ai/refine`, `/ai/governance` and the first turn of `/ai/agent` now raise **HTTP 401 `{code:"needs_keys"}`** for non-owners with no BYOK — instead of the previous silent `// J:OFFLINE` string. Agent loop also zeros `ctx.tavily_key` for non-owners so `web_search` tool can't burn Tavily credits.
+- **`routes/ai.py::/ai/chain`**: shows the universal step as `runnable:false` and returns top-level `is_owner:false` for non-owners so the Settings UI can render the SKIP badge correctly.
+- **`routes/knowledge.py::/knowledge/search`**: returns **HTTP 401 `{code:"needs_tavily_key"}`** for non-owners.
+- **Regression suite**: new `backend/tests/test_owner_lock.py` — 8/8 pass. Existing 4 test files were updated to hit `test_owner_session_001` since they legitimately need Universal Key access. Full backend suite: 130/130 green.
+- **Cost stopped**: verified via curl — a non-owner Bearer gets `401 needs_keys` before any provider call is dispatched (`attempts[].status="skipped"` on every step, `ms:0`).
+

@@ -18,7 +18,7 @@ import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/") or \
     "https://gauntlet-devspace.preview.emergentagent.com"
-TOKEN = "test_session_devspace_001"
+TOKEN = "test_owner_session_001"
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 

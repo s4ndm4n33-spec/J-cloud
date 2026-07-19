@@ -24,6 +24,7 @@ MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
+OWNER_USER_ID = os.environ.get("OWNER_USER_ID", "").strip()
 WORKSPACE_ROOT = Path(os.environ["WORKSPACE_ROOT"])
 OVERRIDE_PASSWORD = os.environ["OVERRIDE_PASSWORD"]
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)

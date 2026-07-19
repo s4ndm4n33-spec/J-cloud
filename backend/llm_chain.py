@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from deps import db, log, EMERGENT_LLM_KEY
+from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
 from core.keyvault import decrypt_key
 
 OLLAMA_PRESETS = {
@@ -155,6 +155,15 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
     if private_mode:
         chain = [s for s in chain if s[1] == "ollama"]
 
+    # OWNER LOCK: the shared EMERGENT_LLM_KEY is only usable by the app owner.
+    # Every non-owner MUST bring their own key (BYOK / Ollama). We simply drop
+    # the universal steps from the chain for non-owners so the failover logic
+    # naturally cascades to their BYOK steps. If they have none configured,
+    # the chain will end with `success=False` and meta.needs_keys=True.
+    is_owner = bool(OWNER_USER_ID) and user_id == OWNER_USER_ID
+    if not is_owner:
+        chain = [s for s in chain if s[0] != "universal"]
+
     attempts: list[dict] = []
     chain_started = _time.perf_counter()
 
@@ -202,5 +211,15 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         "total_ms": int((_time.perf_counter() - chain_started) * 1000),
         "task": task,
     }
+    # Signal to the caller (and the frontend) whether this user still needs
+    # to bring their own key. True when every remaining step was skipped
+    # because BYOK was missing (i.e. non-owner with no cloud key + no ollama).
+    if attempts and all(a.get("status") == "skipped" and a.get("reason") == "byok-missing"
+                        for a in attempts):
+        meta["needs_keys"] = True
+    elif not attempts and not is_owner:
+        # Chain was empty after owner-lock (universal stripped, no BYOK) —
+        # nothing was even attempted.
+        meta["needs_keys"] = True
     await _record_telemetry(user_id, meta)
     return "", meta
