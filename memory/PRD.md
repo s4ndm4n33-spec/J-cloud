@@ -154,3 +154,11 @@ Public production users were freeloading on the owner's `EMERGENT_LLM_KEY` and `
 - **Regression suite**: new `backend/tests/test_owner_lock.py` — 8/8 pass. Existing 4 test files were updated to hit `test_owner_session_001` since they legitimately need Universal Key access. Full backend suite: 130/130 green.
 - **Cost stopped**: verified via curl — a non-owner Bearer gets `401 needs_keys` before any provider call is dispatched (`attempts[].status="skipped"` on every step, `ms:0`).
 
+## 2026-07-19 — Inline BYOK Card in chat (Owner-Lock companion)
+Turned the 401 needs_keys response into a first-class onboarding moment inside J's chat:
+- New `frontend/src/components/BYOKInlineCard.jsx` — J's voice explains the deal, three chips (OpenAI / Anthropic / Gemini), tap to reveal a password input + a `Get one →` deep-link to the provider's key page, `SAVE + RETRY →` button. Tavily variant shown for `needs_tavily_key`. Footer nudge to Ollama for zero-cloud users.
+- `AICoworker.jsx` catches 401 `needs_keys`/`needs_tavily_key` in `send()` and pushes a `role:"needs_keys"` message. `ChatMessage` renders the card. After the user saves a key, `onSaved` callback removes the card and re-fires the user's original message with the same agent/chat mode.
+- New API helper `saveProviderKey(provider, api_key)` in `lib/api.js`.
+- **Verified end-to-end** with Playwright: non-owner user hits `/ai/chat` → card renders → chip select → key input revealed → SAVE + RETRY → green confirmation badge → auto-retry with saved key fires. Full flow round-trips in under 3 seconds.
+
+

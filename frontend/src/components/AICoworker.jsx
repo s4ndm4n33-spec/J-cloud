@@ -5,6 +5,7 @@ import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
 import KnowledgePanel from "@/components/KnowledgePanel";
 import VoiceMode from "@/components/VoiceMode";
+import { BYOKInlineCard } from "@/components/BYOKInlineCard";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
@@ -215,7 +216,22 @@ function ChatTab({
         return r.reply || "";
       }
     } catch (e) {
-      const err = `// LLM error: ${e?.response?.data?.detail || e.message}`;
+      // Owner-lock: backend returns 401 with detail.code="needs_keys" (LLM)
+      // or "needs_tavily_key" (web_search) when the user has no BYOK.
+      // Render an inline BYOK card so J can onboard them without a modal.
+      const detail = e?.response?.data?.detail;
+      const code = typeof detail === "object" ? detail?.code : null;
+      if (e?.response?.status === 401 && (code === "needs_keys" || code === "needs_tavily_key")) {
+        setMessages((prev) => [...prev, {
+          role: "needs_keys",
+          code,
+          retryText: text,
+          retryAgent: agentMode,
+        }]);
+        return null;
+      }
+      const raw = typeof detail === "object" ? (detail?.message || JSON.stringify(detail)) : (detail || e.message);
+      const err = `// LLM error: ${raw}`;
       setMessages((prev) => [...prev, { role: "assistant", content: err }]);
       return null;
     } finally {
@@ -227,7 +243,17 @@ function ChatTab({
     <div className="flex flex-col h-full">
       <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-3 space-y-3" data-testid="chat-messages">
         {messages.map((m, i) => (
-          <ChatMessage key={i} msg={m} />
+          <ChatMessage
+            key={i}
+            msg={m}
+            onRetryAfterSave={() => {
+              // Remove the needs_keys card and re-fire the original message.
+              setMessages((prev) => prev.filter((x) => x !== m));
+              if (m.retryAgent !== undefined) setAgentMode(m.retryAgent);
+              // Defer so the state update flushes first, then send.
+              setTimeout(() => { send(m.retryText); }, 20);
+            }}
+          />
         ))}
         {busy && <div className="font-mono text-[0.65rem] text-cyan">// J is {agentMode ? "working" : "thinking"}…</div>}
       </div>
@@ -323,7 +349,7 @@ function ChatTab({
   );
 }
 
-function ChatMessage({ msg }) {
+function ChatMessage({ msg, onRetryAfterSave }) {
   if (msg.role === "user") {
     return (
       <div className="text-sm text-gridwhite">
@@ -356,6 +382,14 @@ function ChatMessage({ msg }) {
           ))}
           {msg.final && <div className="mt-2 whitespace-pre-wrap text-gridwhite font-medium">{msg.final}</div>}
         </div>
+      </div>
+    );
+  }
+  if (msg.role === "needs_keys") {
+    return (
+      <div className="text-sm text-gridwhite" data-testid="needs-keys-message">
+        <div className="font-mono text-[0.6rem] tracking-widest text-cyan mb-1">// J</div>
+        <BYOKInlineCard code={msg.code} onSaved={onRetryAfterSave} />
       </div>
     );
   }

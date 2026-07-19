@@ -323,6 +323,11 @@ export async function saveOllama(base_url, default_model) {
   })).data;
 }
 
+// Set a cloud BYOK (openai / anthropic / gemini). Returns { ok, provider, masked }.
+export async function saveProviderKey(provider, api_key) {
+  return (await client.put("/settings/keys", { provider, api_key })).data;
+}
+
 
 // ----- Knowledge (J:MIND) -----
 export async function getKnowledgeStats() {
