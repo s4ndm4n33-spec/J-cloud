@@ -5,7 +5,7 @@
    Tone: J is speaking. Sardonic, kind, direct. No dead-ends. */
 import { useState } from "react";
 import { Key, ArrowRight, CheckCircle, WarningCircle } from "@phosphor-icons/react";
-import { saveProviderKey } from "../lib/api";
+import { saveProviderKey, validateProviderKey } from "../lib/api";
 
 const PROVIDERS = [
   {
@@ -35,6 +35,7 @@ export function BYOKInlineCard({ code, onSaved }) {
   const [picked, setPicked] = useState(null); // provider id
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState("SAVING…");
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(null); // { provider, masked }
 
@@ -44,6 +45,26 @@ export function BYOKInlineCard({ code, onSaved }) {
     if (!picked || !apiKey.trim()) return;
     setBusy(true);
     setErr("");
+    // Step 1: live-probe the key against the provider. Fail fast on bad key.
+    setBusyLabel("VERIFYING…");
+    try {
+      const v = await validateProviderKey(picked, apiKey.trim());
+      if (!v?.ok) {
+        setErr(v?.message || "Key rejected by provider. Check for whitespace or a revoked key.");
+        setBusy(false);
+        return;
+      }
+    } catch (e) {
+      setErr(
+        e?.response?.data?.detail
+          || e?.message
+          || "Could not reach the provider to verify. Try again.",
+      );
+      setBusy(false);
+      return;
+    }
+    // Step 2: save it.
+    setBusyLabel("SAVING…");
     try {
       const r = await saveProviderKey(picked, apiKey.trim());
       setSaved({ provider: r.provider, masked: r.masked });
@@ -185,7 +206,7 @@ export function BYOKInlineCard({ code, onSaved }) {
                   className="flex items-center gap-1.5 px-3 py-1 font-mono text-[0.7rem] tracking-widest border border-cyan text-cyan hover:bg-cyan hover:text-void disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-cyan transition-colors"
                   data-testid="byok-save-btn"
                 >
-                  {busy ? "SAVING…" : "SAVE + RETRY"}
+                  {busy ? busyLabel : "SAVE + RETRY"}
                   {!busy && <ArrowRight size={11} weight="bold" />}
                 </button>
               </div>

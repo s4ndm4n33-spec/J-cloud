@@ -46,6 +46,86 @@ async def list_keys(user: dict = Depends(get_current_user)):
     }
 
 
+@router.post("/settings/keys/validate")
+async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
+    """Live-probe a provider key. Returns {ok, provider, message, models?}.
+
+    Called by the inline BYOK card BEFORE PUT /settings/keys so users don't
+    save a rogue-whitespace or misprovisioned key and then discover the
+    problem two turns later. Uses provider-specific list-models endpoints
+    (fast, cheap, no tokens consumed).
+    """
+    provider = (payload.get("provider") or "").strip().lower()
+    api_key = (payload.get("api_key") or "").strip()
+    if provider not in {"openai", "anthropic", "gemini"}:
+        raise HTTPException(status_code=400, detail="Unsupported provider")
+    if not api_key or len(api_key) < 12:
+        return {"ok": False, "provider": provider,
+                "message": "Key looks too short — double-check for a copy/paste truncation."}
+
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        try:
+            if provider == "openai":
+                r = await http.get("https://api.openai.com/v1/models",
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                if r.status_code == 200:
+                    ids = [m.get("id") for m in r.json().get("data", [])][:5]
+                    return {"ok": True, "provider": provider,
+                            "message": f"OpenAI live. {len(ids)}+ models visible.",
+                            "models": ids}
+                if r.status_code == 401:
+                    return {"ok": False, "provider": provider,
+                            "message": "OpenAI rejected the key (401). Check for stray whitespace or a revoked key."}
+                if r.status_code == 429:
+                    # Rate-limited but key is presumably valid.
+                    return {"ok": True, "provider": provider,
+                            "message": "Key accepted (rate-limited on probe). Saving anyway."}
+                return {"ok": False, "provider": provider,
+                        "message": f"OpenAI returned HTTP {r.status_code}."}
+
+            if provider == "anthropic":
+                r = await http.get("https://api.anthropic.com/v1/models",
+                                   headers={
+                                       "x-api-key": api_key,
+                                       "anthropic-version": "2023-06-01",
+                                   })
+                if r.status_code == 200:
+                    ids = [m.get("id") for m in r.json().get("data", [])][:5]
+                    return {"ok": True, "provider": provider,
+                            "message": f"Anthropic live. {len(ids)}+ models visible.",
+                            "models": ids}
+                if r.status_code in (401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "Anthropic rejected the key. Check for stray whitespace or wrong workspace."}
+                if r.status_code == 429:
+                    return {"ok": True, "provider": provider,
+                            "message": "Key accepted (rate-limited on probe). Saving anyway."}
+                return {"ok": False, "provider": provider,
+                        "message": f"Anthropic returned HTTP {r.status_code}."}
+
+            if provider == "gemini":
+                r = await http.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+                if r.status_code == 200:
+                    ids = [m.get("name", "").split("/")[-1]
+                           for m in r.json().get("models", [])][:5]
+                    return {"ok": True, "provider": provider,
+                            "message": f"Gemini live. {len(ids)}+ models visible.",
+                            "models": ids}
+                if r.status_code in (400, 401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "Google rejected the key. Check the AI Studio key page for status."}
+                return {"ok": False, "provider": provider,
+                        "message": f"Gemini returned HTTP {r.status_code}."}
+        except httpx.HTTPError as e:
+            return {"ok": False, "provider": provider,
+                    "message": f"Network error reaching {provider}: {e}"}
+
+    return {"ok": False, "provider": provider, "message": "Unknown validation outcome."}
+
+
 @router.put("/settings/keys")
 async def set_key(payload: dict, user: dict = Depends(get_current_user)):
     provider = payload.get("provider", "")

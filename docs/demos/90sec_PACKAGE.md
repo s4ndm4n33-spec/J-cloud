@@ -3,7 +3,11 @@
 ## Assets shipped
 
 - `docs/demos/90sec_script.md` — the script with beat timing
-- `docs/demos/audio/90sec_j_narration.mp3` — **J's voice, rendered** (onyx via OpenAI TTS through Universal Key). Duration: **38.1 seconds** of actual speech.
+- `docs/demos/audio/90sec_j_narration.mp3` — **J's voice, rendered** (nova via OpenAI TTS through the app's live `/api/voice/speak` pipeline). Duration: **37.7 seconds** of actual speech. **Re-rendered 2026-07-19** as a single-request take (coherent prosody across the full run, not stitched from clips).
+- `docs/demos/audio/90sec_j_narration_nova.mp3` — mirror of the canonical file.
+- `docs/demos/audio/90sec_j_narration_nova_slow.mp3` — alternate at 0.95× speed (~39.9s) if you want extra gravitas on the mix.
+- `docs/demos/audio/90sec_j_narration_onyx_male.mp3` — legacy pre-nova take, kept for reference.
+- `docs/demos/render_90sec_audio.py` — the render script. Re-run any time the narration text is edited.
 
 The 38-second narration + ~52s of pre/post/pause = a full 90s runtime. Marketing cuts *breathe* — cold open, cold close, moments where the voice sits back and lets the visual carry. Do not fill the 52s of headroom with more narration; fill it with atmosphere.
 

@@ -97,6 +97,42 @@ def test_knowledge_search_owner_200():
     assert r.status_code != 401, r.text
 
 
+# ---------- /settings/keys/validate (live key probe) ----------
+
+def test_validate_short_key_rejected():
+    r = requests.post(f"{BASE}/api/settings/keys/validate", headers=OWNER_H,
+                      json={"provider": "openai", "api_key": "short"}, timeout=15)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert "short" in j["message"].lower() or "trunc" in j["message"].lower()
+
+
+def test_validate_bad_openai_key_401_hint():
+    r = requests.post(f"{BASE}/api/settings/keys/validate", headers=OWNER_H,
+                      json={"provider": "openai",
+                            "api_key": "sk-obviouslyFakeKey1234567890xyz"}, timeout=20)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+    assert "openai" in j["message"].lower() or "reject" in j["message"].lower()
+
+
+def test_validate_bad_gemini_key():
+    r = requests.post(f"{BASE}/api/settings/keys/validate", headers=OWNER_H,
+                      json={"provider": "gemini",
+                            "api_key": "AIzaFakeGeminiKey1234567890"}, timeout=20)
+    assert r.status_code == 200
+    j = r.json()
+    assert j["ok"] is False
+
+
+def test_validate_unsupported_provider_400():
+    r = requests.post(f"{BASE}/api/settings/keys/validate", headers=OWNER_H,
+                      json={"provider": "openai_v2", "api_key": "xxxxxxxxxxxx"}, timeout=10)
+    assert r.status_code == 400
+
+
 # ---------- /ai/agent (agent loop) ----------
 
 def test_agent_guest_401(mongo_seeded_project):

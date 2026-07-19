@@ -161,4 +161,17 @@ Turned the 401 needs_keys response into a first-class onboarding moment inside J
 - New API helper `saveProviderKey(provider, api_key)` in `lib/api.js`.
 - **Verified end-to-end** with Playwright: non-owner user hits `/ai/chat` → card renders → chip select → key input revealed → SAVE + RETRY → green confirmation badge → auto-retry with saved key fires. Full flow round-trips in under 3 seconds.
 
+## 2026-07-19 — Live key validation on SAVE + RETRY
+Before writing a BYOK to Mongo, the card now live-probes the provider:
+- **New backend** `POST /api/settings/keys/validate` (payload: `{provider, api_key}`) — hits `models.list()` on the target provider (OpenAI, Anthropic, Gemini) with clear provider-branded error messages: *"OpenAI rejected the key (401). Check for stray whitespace or a revoked key."* Rate-limits (429) treated as "key valid, saving anyway."
+- **Frontend** `BYOKInlineCard.jsx`: `handleSave` runs `validateProviderKey` FIRST. On failure → inline orange error, no DB write, user can correct without losing the card. On success → save proceeds. Button label alternates `VERIFYING… → SAVING…` for a clear state signal.
+- **Verified**: Playwright test pastes `sk-obviouslyFakeKey1234567890xyz` → red "OpenAI rejected the key (401)" appears in the card, `/api/settings/keys` still shows `openai.configured: false`. Zero rogue-key persists.
+- **4 new backend tests** in `test_owner_lock.py` cover short key, bad openai, bad gemini, unsupported provider. Full suite 12/12 green.
+
+## 2026-07-19 — 90-sec narration re-rendered in nova
+- Fresh nova take via `docs/demos/render_90sec_audio.py` calling the app's live `/api/voice/speak` pipeline (same code path as in-app voice mode, so what marketing ships is what users hear).
+- **Single-request render** (631 chars, well under the 4096 cap) — prosody stays coherent across the full 37.7s take instead of stitched from clips.
+- Three files now in `docs/demos/audio/`: canonical `90sec_j_narration.mp3` + `_nova.mp3` mirror + `_nova_slow.mp3` at 0.95× speed for a heavier mix.
+- Legacy `_onyx_male.mp3` preserved for reference.
+
 
