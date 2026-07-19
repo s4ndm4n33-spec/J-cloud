@@ -21,12 +21,18 @@ from core.persistence import (
     heuristic_get, heuristic_update, render_signature,
 )
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
+from core.ratelimit import take as ratelimit_take
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
 from core import chronicle as chron
 from llm_chain import TASK_CHAINS, chain_call, resolve_byok
 from chronicle_helpers import chronicle_narrative, chronicle_session_start
 
 router = APIRouter()
+
+# Rate limits (owner is exempt — see core/ratelimit.set_owner_id).
+# Chat/refine: 12 req/min. Agent: 6 req/min (heavier turns, more tool calls).
+_CHAT_CAP, _CHAT_REFILL = 12, 12 / 60.0
+_AGENT_CAP, _AGENT_REFILL = 6, 6 / 60.0
 
 
 def _build_context_block(payload: dict) -> str:
@@ -117,6 +123,7 @@ def _check_verification_required(steps: list[dict]) -> Optional[str]:
 @router.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
     """Gemini-first chat with BYOK failover chain."""
+    ratelimit_take(user["user_id"], "ai_chat", _CHAT_CAP, _CHAT_REFILL)
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
     project_id = payload.get("project_id")
@@ -216,6 +223,7 @@ async def ai_chat_history(conversation_id: str, user: dict = Depends(get_current
 @router.post("/ai/refine")
 async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     """GPT-5.2 surgical refine. Returns refined code + auto-Gauntlet verdict."""
+    ratelimit_take(user["user_id"], "ai_refine", _CHAT_CAP, _CHAT_REFILL)
     code = payload.get("code", "")
     instruction = payload.get("instruction", "")
     language = payload.get("language", "python")
@@ -318,6 +326,7 @@ async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
 @router.post("/ai/agent")
 async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     """Agentic chat — J plans, calls tools, returns transcript."""
+    ratelimit_take(user["user_id"], "ai_agent", _AGENT_CAP, _AGENT_REFILL)
     project_id = payload.get("project_id")
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id required")
@@ -665,22 +674,26 @@ async def ai_chain(user: dict = Depends(get_current_user)):
     """Show the resolved failover chain for each task (which steps will actually run)."""
     private_mode = bool(user.get("private_mode", False))
     is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    # Pre-fetch all BYOK docs in one hit so we can annotate every step with
+    # the user's preferred_model.
+    all_byok = {d["provider"]: d async for d in db.user_provider_keys.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "ciphertext": 0}
+    )}
     out: dict[str, list[dict]] = {}
     for task, steps in TASK_CHAINS.items():
         resolved = []
         for source, provider, model in steps:
             if source == "universal":
-                # Owner lock: the shared Universal Key is only runnable by the
-                # app owner. Everyone else must BYOK — universal shows SKIP.
                 runnable = bool(EMERGENT_LLM_KEY) and is_owner
                 shown_model = model
             else:
+                doc = all_byok.get(provider)
                 cfg = await resolve_byok(user["user_id"], provider)
                 runnable = bool(cfg)
                 if provider == "ollama" and runnable and isinstance(cfg, dict):
                     shown_model = cfg.get("default_model", model)
                 else:
-                    shown_model = model
+                    shown_model = (doc or {}).get("preferred_model") or model
             if private_mode and provider != "ollama":
                 runnable = False
             resolved.append({

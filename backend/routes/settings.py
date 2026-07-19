@@ -28,13 +28,15 @@ async def list_keys(user: dict = Depends(get_current_user)):
                 "configured": True,
                 "masked": d.get("masked", ""),
                 "updated_at": d.get("updated_at"),
+                "preferred_model": d.get("preferred_model"),
             }
             if prov == "ollama":
                 entry["base_url"] = d.get("base_url", "")
                 entry["default_model"] = d.get("default_model", "")
             out.append(entry)
         else:
-            entry = {"provider": prov, "configured": False, "masked": "", "updated_at": None}
+            entry = {"provider": prov, "configured": False, "masked": "",
+                     "updated_at": None, "preferred_model": None}
             if prov == "ollama":
                 entry["base_url"] = ""
                 entry["default_model"] = ""
@@ -164,12 +166,18 @@ async def set_key(payload: dict, user: dict = Depends(get_current_user)):
         "masked": mask(api_key),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Optional: user-picked model per BYOK provider (overrides TASK_CHAINS
+    # default when this provider runs). Blank = fall back to default.
+    preferred_model = (payload.get("preferred_model") or "").strip()
+    if preferred_model:
+        doc["preferred_model"] = preferred_model
     await db.user_provider_keys.update_one(
         {"user_id": user["user_id"], "provider": provider},
         {"$set": doc},
         upsert=True,
     )
-    return {"ok": True, "provider": provider, "masked": doc["masked"]}
+    return {"ok": True, "provider": provider, "masked": doc["masked"],
+            "preferred_model": preferred_model or None}
 
 
 @router.delete("/settings/keys/{provider}")

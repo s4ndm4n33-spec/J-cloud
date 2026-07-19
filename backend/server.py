@@ -21,14 +21,17 @@ import os
 from fastapi import APIRouter, FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
-from deps import client, db  # noqa: F401  (db imported to ensure indexes attach)
+from deps import client, db, OWNER_USER_ID  # noqa: F401  (db imported to ensure indexes attach)
 from core import chronicle as chron
 from core import ambient
+from core.ratelimit import set_owner_id as _set_rl_owner
 from routes import (
     agents, ai, ambient as ambient_routes, audit, auth, chronicle,
     gauntlet, git_local, github, knowledge, projects, settings, terminal,
     uploads, voice,
 )
+
+_set_rl_owner(OWNER_USER_ID)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger("gauntlet")

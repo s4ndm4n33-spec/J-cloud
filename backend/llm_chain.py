@@ -59,6 +59,15 @@ async def resolve_byok(user_id: str, provider: str) -> Optional[Any]:
     return None
 
 
+async def _byok_meta(user_id: str, provider: str) -> dict:
+    """Return {preferred_model} for a stored BYOK, or empty dict."""
+    doc = await db.user_provider_keys.find_one(
+        {"user_id": user_id, "provider": provider},
+        {"_id": 0, "preferred_model": 1},
+    )
+    return doc or {}
+
+
 # Task chains: Universal first, then BYO of preferred provider, then BYO of others.
 # Each step: (source, provider, model). source = "universal" or "byok".
 # Ollama model "user-default" means: use whatever default_model the user saved.
@@ -171,6 +180,7 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         for source, provider, model in chain:
             if source == "universal":
                 api_key = EMERGENT_LLM_KEY
+                effective_model = model
             else:
                 api_key = await resolve_byok(user_id, provider)
                 if not api_key:
@@ -179,19 +189,23 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
                                      "status": "skipped", "reason": "byok-missing",
                                      "ms": 0})
                     continue
+                # If the user picked a specific model for this provider, honor
+                # it — otherwise use the chain's default.
+                meta_doc = await _byok_meta(user_id, provider)
+                effective_model = meta_doc.get("preferred_model") or model
             t0 = _time.perf_counter()
             try:
                 reply = await _single_call(
-                    api_key, provider, model, system, user_text,
+                    api_key, provider, effective_model, system, user_text,
                     f"{session_id}-{source}-{provider}",
                 )
                 ms = int((_time.perf_counter() - t0) * 1000)
                 attempts.append({"pass": pass_idx, "source": source,
-                                 "provider": provider, "model": model,
+                                 "provider": provider, "model": effective_model,
                                  "status": "ok", "ms": ms})
                 meta = {
                     "success": True,
-                    "step_used": {"source": source, "provider": provider, "model": model},
+                    "step_used": {"source": source, "provider": provider, "model": effective_model},
                     "attempts": attempts,
                     "total_ms": int((_time.perf_counter() - chain_started) * 1000),
                     "task": task,
@@ -201,9 +215,9 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
             except Exception as e:  # noqa: BLE001
                 ms = int((_time.perf_counter() - t0) * 1000)
                 short = str(e)[:280]
-                log.warning(f"chain[{task}] {source}/{provider}/{model} failed in {ms}ms: {short}")
+                log.warning(f"chain[{task}] {source}/{provider}/{effective_model} failed in {ms}ms: {short}")
                 attempts.append({"pass": pass_idx, "source": source,
-                                 "provider": provider, "model": model,
+                                 "provider": provider, "model": effective_model,
                                  "status": "error", "reason": short, "ms": ms})
                 continue
     meta = {

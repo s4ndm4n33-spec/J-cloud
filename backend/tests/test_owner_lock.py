@@ -133,6 +133,48 @@ def test_validate_unsupported_provider_400():
     assert r.status_code == 400
 
 
+# ---------- Preferred-model propagation ----------
+
+def test_preferred_model_shows_in_chain():
+    """Setting preferred_model on save should appear in /ai/chain."""
+    # Save
+    r = requests.put(f"{BASE}/api/settings/keys", headers=OWNER_H,
+                     json={"provider": "openai",
+                           "api_key": "sk-testfakePREF9999999",
+                           "preferred_model": "gpt-5.4-mini"}, timeout=10)
+    assert r.status_code == 200
+    assert r.json()["preferred_model"] == "gpt-5.4-mini"
+    try:
+        # Assert it flows into /ai/chain
+        r2 = requests.get(f"{BASE}/api/ai/chain", headers=OWNER_H, timeout=10)
+        openai_byok = [s for s in r2.json()["chains"]["refine"]
+                       if s["source"] == "byok" and s["provider"] == "openai"]
+        assert openai_byok, "no openai byok step in chain"
+        assert openai_byok[0]["model"] == "gpt-5.4-mini"
+    finally:
+        requests.delete(f"{BASE}/api/settings/keys/openai", headers=OWNER_H, timeout=10)
+
+
+# ---------- Rate limiter ----------
+
+def test_rate_limit_kicks_in_for_non_owner():
+    """Non-owner: after 12 chat requests in a short window, next hit is 429."""
+    # First: warm up — most requests will 401 needs_keys, which is fine; the
+    # limiter counts EVERY request, not just successes.
+    codes = []
+    for _ in range(14):
+        r = requests.post(f"{BASE}/api/ai/chat", headers=GUEST_H,
+                          json={"message": "rl"}, timeout=15)
+        codes.append(r.status_code)
+    # We should see at least one 429 in the tail — cap is 12/min.
+    assert 429 in codes, f"expected 429 in tail, got {codes}"
+    # And the 429 body should carry code=rate_limited
+    last = requests.post(f"{BASE}/api/ai/chat", headers=GUEST_H,
+                         json={"message": "rl"}, timeout=15)
+    if last.status_code == 429:
+        assert last.json()["detail"]["code"] == "rate_limited"
+
+
 # ---------- /ai/agent (agent loop) ----------
 
 def test_agent_guest_401(mongo_seeded_project):
