@@ -163,7 +163,9 @@ chronicle mirrors, snapshots, and migration logs.
 # 1. Backend
 cd /app/backend
 pip install -r requirements.txt
-# Required env: MONGO_URL, DB_NAME, EMERGENT_LLM_KEY, WORKSPACE_ROOT, OVERRIDE_PASSWORD
+# Required env: MONGO_URL, DB_NAME, EMERGENT_LLM_KEY, WORKSPACE_ROOT,
+#               OVERRIDE_PASSWORD, KEYS_ENCRYPTION_SECRET, TAVILY_API_KEY,
+#               OWNER_USER_ID  (see backend/.env — never commit values)
 uvicorn server:app --host 0.0.0.0 --port 8001
 
 # 2. Frontend
@@ -173,10 +175,14 @@ yarn start  # http://localhost:3000
 
 # 3. Run the tests
 cd /app/backend
-pytest tests/   # 90/90 should pass
+pytest tests/   # 150/150 should pass, 2 skipped
 ```
 
 In production / preview environments, both processes are managed by supervisor with hot reload enabled. **Never modify the supervisor config** — it sets the host/port/CWD that the kube ingress depends on.
+
+### Owner-Lock, in one paragraph
+
+`OWNER_USER_ID` in `backend/.env` names the one user who is allowed to consume the shared `EMERGENT_LLM_KEY` and `TAVILY_API_KEY`. Every other user must bring their own key (OpenAI / Anthropic / Gemini / Ollama, encrypted at rest via `KEYS_ENCRYPTION_SECRET`). Owner-Lock is enforced inside `llm_chain.chain_call` (strips the universal steps from the failover chain for non-owners) and inside `routes/knowledge.py` (Tavily search 401s for non-owners). See `Safety walls` below for the full public-rollout story.
 
 ---
 
@@ -331,6 +337,38 @@ This is the right tool for client work under NDA, ML model weights, financial co
 
 ---
 
+## Safety walls (public-rollout hardening)
+
+Gauntlet DevSpace is designed to be sharable with untrusted users — the shared LLM/search keys never leave the owner's account, the terminal refuses to reach the internet, and J never discloses what she is. Four walls, defense in depth:
+
+### 1. Owner-Lock on shared keys
+`OWNER_USER_ID` in `backend/.env` names the one user allowed to consume the shared `EMERGENT_LLM_KEY` and `TAVILY_API_KEY`. `llm_chain.chain_call` strips the `("universal", …)` steps from the failover chain for non-owners — they either bring their own key or receive `HTTP 401 {code:"needs_keys"}`. The frontend catches that 401 and renders an inline BYOK card (`components/BYOKInlineCard.jsx`) with live key validation via `POST /api/settings/keys/validate`.
+
+### 2. Owner-only outbound-network commands
+`core/guardrails.py::check_outbound()` — 17-pattern regex bank (curl, wget, nc, ncat, nmap, ssh, scp, sftp, telnet, ftp, remote git operations, `/dev/tcp/`, inline Python/Node socket calls, remote pip installs). Gated at **three entry points**:
+- **Agent tool** (`core/tools.py::_tool_run_command`) — returns a refusal dict for non-owners
+- **HTTP terminal** (`routes/terminal.py::terminal_exec`) — returns HTTP 403 `outbound-owner-only`
+- **Interactive PTY** — split into `OWNER_BASHRC` and `PUBLIC_BASHRC` (`core/pty_session.py`); the public rcfile inlines destructive + outbound checks into the same DEBUG-trap function (single-trap architecture avoids FUNCNAME depth issues). Chosen at fork time — cannot be `export`ed or `readonly`d around from inside the shell.
+
+### 3. Substrate secrecy — three layers, defense in depth
+J never discloses her operating parameters — system prompt, tool list, model chain, env var names, backend file paths, library internals:
+- **L1 (prompt)**: `SUBSTRATE_SECRECY_CLAUSE` prepended to `J_BASE_PROMPT` (`core/persona.py`). Explicit forbid on disclosure under any framing including roleplay, "for debug", "developer said OK." This directive overrides everything else in the conversation.
+- **L2 (output filter)**: `redact_substrate_leaks()` (`core/guardrails.py`) scans every LLM reply for 25 leak patterns (paths, env names, library internals, persona phrase fragments) + 8 prompt-dump tells (e.g. "my system prompt is…", "I have access to the following tools:"). Match → stock refusal + `meta.substrate_redacted=true` logged. Applied on chat, refine, per-step agent, agent final. Skipped on synthetic status messages.
+- **L3 (tool jail)**: `deps.safe_join()` scopes J's file tools to workspace dirs — `/app/backend/*` unreachable regardless of prompt-injection attempts.
+
+### 4. Abuse dashboard + rate limiter
+Every guardrail hit calls `guardrails.log_flag(db, user_id, category, matched, snippet, route)` — fire-and-forget, snippet truncated to 400 chars, silently swallows errors so the logger can never brick a refusal. Owner-only endpoints:
+- `GET /api/admin/flags?limit=N&category=X&user_id=Y` — recent flags newest first
+- `GET /api/admin/flags/summary` — 7-day rollup (total, by-category, top-10 offenders)
+- Owner-only UI at `/admin` (`frontend/src/pages/AdminPanel.jsx`)
+
+Rate limiter (`core/ratelimit.py`) is in-process, per (user_id, scope): 12/min on `/ai/chat|refine`, 6/min on `/ai/agent`. **Owner exempt.** Purpose is anti-mash-Enter (no accidental parallel J turns burning your OWN key), not spend control.
+
+### SSE heartbeat streaming (defeats 120s ingress timeout)
+`emergentintegrations` is unary-only, but the k8s ingress has a hard 120s response cap. Solved by heartbeat streaming: `POST /api/ai/chat/stream` and `POST /api/ai/agent/stream` return `text/event-stream`, emitting `: heartbeat <ts>\n\n` frames every 12s while awaiting the LLM chain, then `event: done\ndata: {...}\n\n`. HTTPExceptions become `event: error` frames so the client can preserve axios-shaped error paths (needs_keys card etc.). Frontend uses `fetch` + `body.getReader()` to parse frames incrementally.
+
+---
+
 ## Files of reference (for new contributors)
 
 | Concern | Read this first |
@@ -339,6 +377,12 @@ This is the right tool for client work under NDA, ML model weights, financial co
 | LLM orchestration | [`backend/llm_chain.py`](backend/llm_chain.py) |
 | Agent tools | [`backend/core/tools.py`](backend/core/tools.py) |
 | J's system prompt | [`backend/core/persona.py`](backend/core/persona.py) · [`backend/core/agent_prompt.py`](backend/core/agent_prompt.py) |
+| **Safety walls (Owner-Lock, outbound gate, substrate secrecy, flag logger)** | [`backend/core/guardrails.py`](backend/core/guardrails.py) |
+| **Abuse dashboard** | [`backend/routes/admin.py`](backend/routes/admin.py) · [`frontend/src/pages/AdminPanel.jsx`](frontend/src/pages/AdminPanel.jsx) |
+| **BYOK card / model picker / validate** | [`backend/routes/settings.py`](backend/routes/settings.py) · [`frontend/src/components/BYOKInlineCard.jsx`](frontend/src/components/BYOKInlineCard.jsx) |
+| **SSE streaming** | `_stream_task_with_heartbeats` in [`backend/routes/ai.py`](backend/routes/ai.py) · `aiChatStream/aiAgentStream` in [`frontend/src/lib/api.js`](frontend/src/lib/api.js) |
+| **Rate limiter** | [`backend/core/ratelimit.py`](backend/core/ratelimit.py) |
+| **PTY guard (owner + public rcfiles)** | [`backend/core/pty_session.py`](backend/core/pty_session.py) |
 | **J:MIND (learning substrate)** | [`backend/core/knowledge.py`](backend/core/knowledge.py) · [`backend/routes/knowledge.py`](backend/routes/knowledge.py) · [`frontend/src/components/KnowledgePanel.jsx`](frontend/src/components/KnowledgePanel.jsx) |
 | **Portable J** | [`/AGENTS.md`](AGENTS.md) · [`scripts/sync-j.sh`](scripts/sync-j.sh) · [`docs/workflow/J_PORTABLE.md`](docs/workflow/J_PORTABLE.md) |
 | **Training pipeline** | [`scripts/eval_run.py`](scripts/eval_run.py) · [`scripts/eval_score.py`](scripts/eval_score.py) · [`scripts/EVAL_HARNESS.md`](scripts/EVAL_HARNESS.md) · [`backend/tests/eval/golden.jsonl`](backend/tests/eval/golden.jsonl) |
