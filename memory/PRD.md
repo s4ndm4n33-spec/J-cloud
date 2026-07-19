@@ -174,4 +174,14 @@ Before writing a BYOK to Mongo, the card now live-probes the provider:
 - Three files now in `docs/demos/audio/`: canonical `90sec_j_narration.mp3` + `_nova.mp3` mirror + `_nova_slow.mp3` at 0.95× speed for a heavier mix.
 - Legacy `_onyx_male.mp3` preserved for reference.
 
+## 2026-07-19 — Model picker + Ollama tab + rate-limit shield
+Batched enhancements landing on the same file surface as the BYOK card:
+- **Model picker in the card**: after `validate` succeeds and returns `models: [...]`, the card reveals a dropdown of the user's available models. Selection saved as `user_provider_keys.preferred_model`; `llm_chain.chain_call` uses it in place of the `TASK_CHAINS` default. `/ai/chain` reflects the pick live.
+- **Ollama chip** (4th tab in the card): base URL + model inputs + `TEST CONNECTION →` button (uses existing `/settings/keys/ollama/test`). Lets zero-budget users route J through localhost in one paste. Success surfaces the same model-picker panel populated from the local server's `/api/tags`.
+- **Rate-limit shield** — new `core/ratelimit.py` (in-process token bucket per `(user_id, scope)`). Applied to `/ai/chat`, `/ai/refine` (12/min) and `/ai/agent` (6/min). **Owner is exempt** (`set_owner_id` in `server.py::startup`). Prevents accidental multi-fire from mashed Enter → parallel J turns on the user's key. Returns HTTP 429 `{code:"rate_limited", retry_in_seconds}`.
+- **Post-save resolved-chain preview**: saved-state card now reads *"J will now use `openai · gpt-5.4-mini`. Retrying…"* — user sees their pick wired up before the retry fires.
+- **Removed**: the daily-cap concept. It was solving a non-problem (user's own key = user's own money). Owner-Lock alone handles the actual API-drain concern.
+- **9/9 new backend tests** (validation, preferred-model propagation, rate-limit) → 136/136 total green.
+- **Playwright verified**: 4 chips, Ollama tab renders url+model, bad key → inline red error (picker suppressed), no daily-cap UI anywhere.
+
 
