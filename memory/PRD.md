@@ -143,3 +143,35 @@ See `/app/memory/test_credentials.md`.
 5. (P2) Ambient WebSocket push (replace `AmbientPulse` HTTP polling).
 6. (P2) Symbol graph memory tools (`who_calls`, `who_imports`, `symbols_in`).
 7. (P2) Voice picker in Settings — 9 OpenAI TTS voices.
+
+## 2026-07-19 — P0 Owner-Only Fallback Lock (API-drain fix)
+Public production users were freeloading on the owner's `EMERGENT_LLM_KEY` and `TAVILY_API_KEY`. Locked both:
+- **New env var** `OWNER_USER_ID=user_5d2818f635a9` in `/app/backend/.env` (exposed via `deps.OWNER_USER_ID`).
+- **`llm_chain.chain_call`**: strips `("universal", …)` steps from the failover chain when `user_id != OWNER_USER_ID`. Non-owners must have BYOK; if none configured, the chain returns empty with `meta.needs_keys=True`.
+- **`routes/ai.py`**: `/ai/chat`, `/ai/refine`, `/ai/governance` and the first turn of `/ai/agent` now raise **HTTP 401 `{code:"needs_keys"}`** for non-owners with no BYOK — instead of the previous silent `// J:OFFLINE` string. Agent loop also zeros `ctx.tavily_key` for non-owners so `web_search` tool can't burn Tavily credits.
+- **`routes/ai.py::/ai/chain`**: shows the universal step as `runnable:false` and returns top-level `is_owner:false` for non-owners so the Settings UI can render the SKIP badge correctly.
+- **`routes/knowledge.py::/knowledge/search`**: returns **HTTP 401 `{code:"needs_tavily_key"}`** for non-owners.
+- **Regression suite**: new `backend/tests/test_owner_lock.py` — 8/8 pass. Existing 4 test files were updated to hit `test_owner_session_001` since they legitimately need Universal Key access. Full backend suite: 130/130 green.
+- **Cost stopped**: verified via curl — a non-owner Bearer gets `401 needs_keys` before any provider call is dispatched (`attempts[].status="skipped"` on every step, `ms:0`).
+
+## 2026-07-19 — Inline BYOK Card in chat (Owner-Lock companion)
+Turned the 401 needs_keys response into a first-class onboarding moment inside J's chat:
+- New `frontend/src/components/BYOKInlineCard.jsx` — J's voice explains the deal, three chips (OpenAI / Anthropic / Gemini), tap to reveal a password input + a `Get one →` deep-link to the provider's key page, `SAVE + RETRY →` button. Tavily variant shown for `needs_tavily_key`. Footer nudge to Ollama for zero-cloud users.
+- `AICoworker.jsx` catches 401 `needs_keys`/`needs_tavily_key` in `send()` and pushes a `role:"needs_keys"` message. `ChatMessage` renders the card. After the user saves a key, `onSaved` callback removes the card and re-fires the user's original message with the same agent/chat mode.
+- New API helper `saveProviderKey(provider, api_key)` in `lib/api.js`.
+- **Verified end-to-end** with Playwright: non-owner user hits `/ai/chat` → card renders → chip select → key input revealed → SAVE + RETRY → green confirmation badge → auto-retry with saved key fires. Full flow round-trips in under 3 seconds.
+
+## 2026-07-19 — Live key validation on SAVE + RETRY
+Before writing a BYOK to Mongo, the card now live-probes the provider:
+- **New backend** `POST /api/settings/keys/validate` (payload: `{provider, api_key}`) — hits `models.list()` on the target provider (OpenAI, Anthropic, Gemini) with clear provider-branded error messages: *"OpenAI rejected the key (401). Check for stray whitespace or a revoked key."* Rate-limits (429) treated as "key valid, saving anyway."
+- **Frontend** `BYOKInlineCard.jsx`: `handleSave` runs `validateProviderKey` FIRST. On failure → inline orange error, no DB write, user can correct without losing the card. On success → save proceeds. Button label alternates `VERIFYING… → SAVING…` for a clear state signal.
+- **Verified**: Playwright test pastes `sk-obviouslyFakeKey1234567890xyz` → red "OpenAI rejected the key (401)" appears in the card, `/api/settings/keys` still shows `openai.configured: false`. Zero rogue-key persists.
+- **4 new backend tests** in `test_owner_lock.py` cover short key, bad openai, bad gemini, unsupported provider. Full suite 12/12 green.
+
+## 2026-07-19 — 90-sec narration re-rendered in nova
+- Fresh nova take via `docs/demos/render_90sec_audio.py` calling the app's live `/api/voice/speak` pipeline (same code path as in-app voice mode, so what marketing ships is what users hear).
+- **Single-request render** (631 chars, well under the 4096 cap) — prosody stays coherent across the full 37.7s take instead of stitched from clips.
+- Three files now in `docs/demos/audio/`: canonical `90sec_j_narration.mp3` + `_nova.mp3` mirror + `_nova_slow.mp3` at 0.95× speed for a heavier mix.
+- Legacy `_onyx_male.mp3` preserved for reference.
+
+

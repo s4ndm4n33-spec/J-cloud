@@ -12,7 +12,7 @@ import pytest
 import requests
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://gauntlet-devspace.preview.emergentagent.com").rstrip("/")
-TOKEN = "test_session_devspace_001"
+TOKEN = "test_owner_session_001"
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 
@@ -48,8 +48,8 @@ class TestAuth:
         r = session.get(f"{BASE_URL}/api/auth/me", timeout=15)
         assert r.status_code == 200, r.text
         u = r.json()
-        assert u["user_id"] == "user_test_devspace"
-        assert u["email"] == "test.j@sovereign.shards"
+        assert u["user_id"] == "user_5d2818f635a9"
+        assert u["email"] == "s4ndm4n33@gmail.com"
 
     def test_me_without_token(self):
         r = requests.get(f"{BASE_URL}/api/auth/me", timeout=15)

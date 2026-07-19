@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
-from deps import db, get_current_user, TAVILY_API_KEY
+from deps import db, get_current_user, TAVILY_API_KEY, OWNER_USER_ID
 from core import knowledge as km
 
 router = APIRouter()
@@ -118,9 +118,18 @@ async def knowledge_resolve_proposal(
 
 
 @router.post("/knowledge/search")
-async def knowledge_search(payload: dict, _user: dict = Depends(get_current_user)):
+async def knowledge_search(payload: dict, user: dict = Depends(get_current_user)):
     """Convenience passthrough — Tavily search + auto-learn (no LLM extract)."""
     await _ensure_ready()
+    # OWNER LOCK: the shared TAVILY_API_KEY is only usable by the app owner.
+    # Non-owner Tavily BYOK is P1 — for now, non-owners get a clean 401 so
+    # the frontend can prompt onboarding.
+    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    if not is_owner:
+        raise HTTPException(status_code=401, detail={
+            "code": "needs_tavily_key",
+            "message": "Web search requires your own Tavily API key. Add one in Settings.",
+        })
     query = (payload or {}).get("query", "")
     max_results = int((payload or {}).get("max_results", 5))
     result = await km.web_search(db, TAVILY_API_KEY, query, max_results=max_results)

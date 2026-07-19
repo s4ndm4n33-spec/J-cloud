@@ -12,7 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from deps import db, log, EMERGENT_LLM_KEY
+from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
 from core.keyvault import decrypt_key
 
 OLLAMA_PRESETS = {
@@ -57,6 +57,15 @@ async def resolve_byok(user_id: str, provider: str) -> Optional[Any]:
         except (ValueError, TypeError):
             log.warning(f"BYOK decrypt failed for {user_id}/{provider}")
     return None
+
+
+async def _byok_meta(user_id: str, provider: str) -> dict:
+    """Return {preferred_model} for a stored BYOK, or empty dict."""
+    doc = await db.user_provider_keys.find_one(
+        {"user_id": user_id, "provider": provider},
+        {"_id": 0, "preferred_model": 1},
+    )
+    return doc or {}
 
 
 # Task chains: Universal first, then BYO of preferred provider, then BYO of others.
@@ -155,6 +164,15 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
     if private_mode:
         chain = [s for s in chain if s[1] == "ollama"]
 
+    # OWNER LOCK: the shared EMERGENT_LLM_KEY is only usable by the app owner.
+    # Every non-owner MUST bring their own key (BYOK / Ollama). We simply drop
+    # the universal steps from the chain for non-owners so the failover logic
+    # naturally cascades to their BYOK steps. If they have none configured,
+    # the chain will end with `success=False` and meta.needs_keys=True.
+    is_owner = bool(OWNER_USER_ID) and user_id == OWNER_USER_ID
+    if not is_owner:
+        chain = [s for s in chain if s[0] != "universal"]
+
     attempts: list[dict] = []
     chain_started = _time.perf_counter()
 
@@ -162,6 +180,7 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         for source, provider, model in chain:
             if source == "universal":
                 api_key = EMERGENT_LLM_KEY
+                effective_model = model
             else:
                 api_key = await resolve_byok(user_id, provider)
                 if not api_key:
@@ -170,19 +189,23 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
                                      "status": "skipped", "reason": "byok-missing",
                                      "ms": 0})
                     continue
+                # If the user picked a specific model for this provider, honor
+                # it — otherwise use the chain's default.
+                meta_doc = await _byok_meta(user_id, provider)
+                effective_model = meta_doc.get("preferred_model") or model
             t0 = _time.perf_counter()
             try:
                 reply = await _single_call(
-                    api_key, provider, model, system, user_text,
+                    api_key, provider, effective_model, system, user_text,
                     f"{session_id}-{source}-{provider}",
                 )
                 ms = int((_time.perf_counter() - t0) * 1000)
                 attempts.append({"pass": pass_idx, "source": source,
-                                 "provider": provider, "model": model,
+                                 "provider": provider, "model": effective_model,
                                  "status": "ok", "ms": ms})
                 meta = {
                     "success": True,
-                    "step_used": {"source": source, "provider": provider, "model": model},
+                    "step_used": {"source": source, "provider": provider, "model": effective_model},
                     "attempts": attempts,
                     "total_ms": int((_time.perf_counter() - chain_started) * 1000),
                     "task": task,
@@ -192,9 +215,9 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
             except Exception as e:  # noqa: BLE001
                 ms = int((_time.perf_counter() - t0) * 1000)
                 short = str(e)[:280]
-                log.warning(f"chain[{task}] {source}/{provider}/{model} failed in {ms}ms: {short}")
+                log.warning(f"chain[{task}] {source}/{provider}/{effective_model} failed in {ms}ms: {short}")
                 attempts.append({"pass": pass_idx, "source": source,
-                                 "provider": provider, "model": model,
+                                 "provider": provider, "model": effective_model,
                                  "status": "error", "reason": short, "ms": ms})
                 continue
     meta = {
@@ -202,5 +225,15 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         "total_ms": int((_time.perf_counter() - chain_started) * 1000),
         "task": task,
     }
+    # Signal to the caller (and the frontend) whether this user still needs
+    # to bring their own key. True when every remaining step was skipped
+    # because BYOK was missing (i.e. non-owner with no cloud key + no ollama).
+    if attempts and all(a.get("status") == "skipped" and a.get("reason") == "byok-missing"
+                        for a in attempts):
+        meta["needs_keys"] = True
+    elif not attempts and not is_owner:
+        # Chain was empty after owner-lock (universal stripped, no BYOK) —
+        # nothing was even attempted.
+        meta["needs_keys"] = True
     await _record_telemetry(user_id, meta)
     return "", meta

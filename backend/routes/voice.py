@@ -6,7 +6,7 @@ so the user gets voice-in / voice-out with zero extra credentials.
 - POST /api/voice/transcribe — multipart file upload, returns {text}.
 - POST /api/voice/speak — {text, voice?}, returns audio/mpeg bytes.
 
-The J persona uses `onyx` by default (deep, authoritative — the JARVIS voice).
+The J persona uses `nova` by default (confident, warm, authoritative female — J's canonical voice).
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from deps import EMERGENT_LLM_KEY, get_current_user
 log = logging.getLogger("gauntlet.voice")
 router = APIRouter()
 
-# Voice choices we expose. `onyx` = J's canonical voice.
+# Voice choices we expose. `nova` = J's canonical voice (confident female).
 J_VOICES = {"onyx", "sage", "echo", "ash", "fable", "alloy", "coral", "nova", "shimmer"}
 MAX_TTS_CHARS = 4096
 MAX_AUDIO_BYTES = 25 * 1024 * 1024  # Whisper's own cap
@@ -77,9 +77,9 @@ async def voice_speak(
         # Silently truncate rather than fail — voice is a "nice-to-have" surface.
         text = text[:MAX_TTS_CHARS]
 
-    voice = payload.get("voice") or "onyx"
+    voice = payload.get("voice") or "nova"
     if voice not in J_VOICES:
-        voice = "onyx"
+        voice = "nova"
     speed = float(payload.get("speed") or 1.0)
     speed = max(0.5, min(speed, 2.0))
 

@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY
+from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY, OWNER_USER_ID
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
@@ -21,12 +21,18 @@ from core.persistence import (
     heuristic_get, heuristic_update, render_signature,
 )
 from core.persona import CHAT_PROMPT, REFINE_PROMPT, GOVERNANCE_PROMPT
+from core.ratelimit import take as ratelimit_take
 from core.tools import ToolContext, execute_tool, parse_tool_calls, strip_tool_calls
 from core import chronicle as chron
 from llm_chain import TASK_CHAINS, chain_call, resolve_byok
 from chronicle_helpers import chronicle_narrative, chronicle_session_start
 
 router = APIRouter()
+
+# Rate limits (owner is exempt — see core/ratelimit.set_owner_id).
+# Chat/refine: 12 req/min. Agent: 6 req/min (heavier turns, more tool calls).
+_CHAT_CAP, _CHAT_REFILL = 12, 12 / 60.0
+_AGENT_CAP, _AGENT_REFILL = 6, 6 / 60.0
 
 
 def _build_context_block(payload: dict) -> str:
@@ -117,6 +123,7 @@ def _check_verification_required(steps: list[dict]) -> Optional[str]:
 @router.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
     """Gemini-first chat with BYOK failover chain."""
+    ratelimit_take(user["user_id"], "ai_chat", _CHAT_CAP, _CHAT_REFILL)
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
     project_id = payload.get("project_id")
@@ -156,6 +163,12 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-{conversation_id}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         reply = (
             "// J:OFFLINE — entire LLM failover chain exhausted.\n"
             "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
@@ -210,6 +223,7 @@ async def ai_chat_history(conversation_id: str, user: dict = Depends(get_current
 @router.post("/ai/refine")
 async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     """GPT-5.2 surgical refine. Returns refined code + auto-Gauntlet verdict."""
+    ratelimit_take(user["user_id"], "ai_refine", _CHAT_CAP, _CHAT_REFILL)
     code = payload.get("code", "")
     instruction = payload.get("instruction", "")
     language = payload.get("language", "python")
@@ -225,6 +239,12 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-refine-{uuid.uuid4().hex[:6]}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         raise HTTPException(status_code=502, detail={
             "message": "LLM failover chain exhausted",
             "attempts": meta["attempts"],
@@ -261,6 +281,12 @@ async def ai_governance(payload: dict, user: dict = Depends(get_current_user)):
         f"{user['user_id']}-gov-{uuid.uuid4().hex[:6]}",
     )
     if not meta["success"]:
+        if meta.get("needs_keys"):
+            raise HTTPException(status_code=401, detail={
+                "code": "needs_keys",
+                "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                "attempts": meta.get("attempts", []),
+            })
         return {
             "ast_report": ast_report,
             "llm_verdict": {
@@ -300,6 +326,7 @@ async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
 @router.post("/ai/agent")
 async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     """Agentic chat — J plans, calls tools, returns transcript."""
+    ratelimit_take(user["user_id"], "ai_agent", _AGENT_CAP, _AGENT_REFILL)
     project_id = payload.get("project_id")
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id required")
@@ -361,7 +388,12 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     # propose_learning can reach Mongo + Tavily without leaking creds through
     # tool args.
     ctx.db = db
-    ctx.tavily_key = TAVILY_API_KEY
+    # OWNER LOCK on shared Tavily key: only the app owner gets to spend the
+    # shared TAVILY_API_KEY on web_search. Everyone else runs with an empty
+    # tavily_key, which makes web_search fail cleanly with a "needs Tavily
+    # key" message. (Per-user Tavily BYOK is P1.)
+    _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    ctx.tavily_key = TAVILY_API_KEY if _is_owner else ""
 
     # --- J:MIND recall — inject top-K globally learned facts relevant to
     # the user's current message into her system context. This is the
@@ -392,6 +424,14 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
             f"{user['user_id']}-agent-{conversation_id}-{step_idx}",
         )
         if not meta["success"]:
+            if meta.get("needs_keys") and step_idx == 0:
+                # First turn already needs BYOK — bail early with 401 so the
+                # frontend can route the user to onboarding.
+                raise HTTPException(status_code=401, detail={
+                    "code": "needs_keys",
+                    "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
+                    "attempts": meta.get("attempts", []),
+                })
             done_reason = "llm_chain_exhausted"
             final_summary = "// J:OFFLINE — LLM chain exhausted. Configure provider keys in Settings."
             steps.append({"type": "assistant", "text": final_summary, "meta": meta})
@@ -633,20 +673,27 @@ async def ai_agent_history(conversation_id: str, user: dict = Depends(get_curren
 async def ai_chain(user: dict = Depends(get_current_user)):
     """Show the resolved failover chain for each task (which steps will actually run)."""
     private_mode = bool(user.get("private_mode", False))
+    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    # Pre-fetch all BYOK docs in one hit so we can annotate every step with
+    # the user's preferred_model.
+    all_byok = {d["provider"]: d async for d in db.user_provider_keys.find(
+        {"user_id": user["user_id"]}, {"_id": 0, "ciphertext": 0}
+    )}
     out: dict[str, list[dict]] = {}
     for task, steps in TASK_CHAINS.items():
         resolved = []
         for source, provider, model in steps:
             if source == "universal":
-                runnable = bool(EMERGENT_LLM_KEY)
+                runnable = bool(EMERGENT_LLM_KEY) and is_owner
                 shown_model = model
             else:
+                doc = all_byok.get(provider)
                 cfg = await resolve_byok(user["user_id"], provider)
                 runnable = bool(cfg)
                 if provider == "ollama" and runnable and isinstance(cfg, dict):
                     shown_model = cfg.get("default_model", model)
                 else:
-                    shown_model = model
+                    shown_model = (doc or {}).get("preferred_model") or model
             if private_mode and provider != "ollama":
                 runnable = False
             resolved.append({
@@ -654,4 +701,4 @@ async def ai_chain(user: dict = Depends(get_current_user)):
                 "runnable": runnable,
             })
         out[task] = resolved
-    return {"chains": out, "private_mode": private_mode}
+    return {"chains": out, "private_mode": private_mode, "is_owner": is_owner}
