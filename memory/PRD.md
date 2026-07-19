@@ -184,4 +184,17 @@ Batched enhancements landing on the same file surface as the BYOK card:
 - **9/9 new backend tests** (validation, preferred-model propagation, rate-limit) → 136/136 total green.
 - **Playwright verified**: 4 chips, Ollama tab renders url+model, bad key → inline red error (picker suppressed), no daily-cap UI anywhere.
 
+## 2026-07-19 — SSE heartbeat streaming (defeats 120s ingress timeout)
+`emergentintegrations` is unary-only, so true token streaming isn't available — but the actual timeout problem is solved by **heartbeat streaming**: keep bytes flowing through the k8s ingress every ≤12s so the 120s buffer can't fire.
+- **New backend endpoints**: `POST /api/ai/chat/stream` and `POST /api/ai/agent/stream` — both return `text/event-stream`. Existing unary `/ai/chat` and `/ai/agent` are preserved (backward compat + tests).
+- **Refactor**: extracted `_ai_chat_impl` and `_ai_agent_impl` async helpers so unary + streaming endpoints share one code path.
+- **Heartbeat generator** (`_stream_task_with_heartbeats`): runs the impl as an asyncio.Task, yields `: heartbeat <ts>\n\n` SSE comment frames every 12s via `wait_for(shield(task), timeout=12)`, then emits the final result as `event: done\ndata: {...}\n\n`. HTTPException from the impl becomes `event: error\ndata: {status, detail}` so the client can preserve the axios-shaped error path (needs_keys card etc.).
+- **SSE headers**: `X-Accel-Buffering: no` (nginx), `Cache-Control: no-transform`, `Connection: keep-alive` — belt and suspenders against proxy buffering.
+- **Frontend client**: `aiChatStream()` + `aiAgentStream()` in `lib/api.js` use `fetch` + `body.getReader()` to parse SSE frames incrementally. Callbacks: `onHeartbeat`, `onDone`, `onError`. Non-2xx responses raise axios-shaped errors (`err.response.data.detail`) so the existing needs_keys catch still fires.
+- **AICoworker.jsx**: `send()` now uses the streaming variants for both chat and agent modes. A new `pulseCount` state increments on every heartbeat frame; the busy indicator renders *"// J is thinking… · pulse 3"* so the user sees J is alive during long turns.
+- **Unit test**: verified the heartbeat generator emits 2 heartbeats then done for a 30s task (12s + 12s + 6s).
+- **Backend tests**: 2 new SSE tests (owner done frame, guest error frame) → 138/138 green.
+- **Playwright verified**: owner sends "pong" prompt through the chat, "// J is thinking…" indicator appears, response lands, no timeout.
+- **Not shipped yet**: true per-step streaming for agent mode (would let the user watch each tool call complete live). Requires refactoring the agent loop into a generator — parked as a P2 UX upgrade. The heartbeat fix alone solves the P0 timeout problem.
+
 

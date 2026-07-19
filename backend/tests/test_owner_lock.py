@@ -175,6 +175,60 @@ def test_rate_limit_kicks_in_for_non_owner():
         assert last.json()["detail"]["code"] == "rate_limited"
 
 
+# ---------- SSE streaming ----------
+
+def _parse_sse_frames(text: str):
+    """Split raw SSE text into a list of {event, data, is_heartbeat} frames."""
+    out = []
+    for block in text.split("\n\n"):
+        block = block.strip("\n")
+        if not block:
+            continue
+        if block.startswith(":"):
+            out.append({"is_heartbeat": True})
+            continue
+        ev, data = "message", ""
+        for line in block.split("\n"):
+            if line.startswith("event: "):
+                ev = line[7:].strip()
+            elif line.startswith("data: "):
+                data += line[6:]
+        out.append({"event": ev, "data": data})
+    return out
+
+
+def test_chat_stream_owner_ends_with_done():
+    """Owner: SSE stream should end with `event: done` carrying reply+meta."""
+    r = requests.post(f"{BASE}/api/ai/chat/stream", headers=OWNER_H,
+                      json={"message": "Reply with exactly one word: pong"},
+                      timeout=60, stream=True)
+    assert r.status_code == 200
+    body = r.text
+    frames = _parse_sse_frames(body)
+    dones = [f for f in frames if f.get("event") == "done"]
+    assert dones, f"no done frame; got frames: {frames[:3]}"
+    import json as _json
+    payload = _json.loads(dones[-1]["data"])
+    assert payload["meta"]["success"] is True
+    assert payload["reply"]
+
+
+def test_chat_stream_guest_emits_error_frame():
+    """Non-owner: SSE stream should end with `event: error` carrying a 401/429 detail."""
+    r = requests.post(f"{BASE}/api/ai/chat/stream", headers=GUEST_H,
+                      json={"message": "hi"}, timeout=30, stream=True)
+    assert r.status_code == 200
+    frames = _parse_sse_frames(r.text)
+    errors = [f for f in frames if f.get("event") == "error"]
+    assert errors, f"no error frame; got: {frames}"
+    import json as _json
+    payload = _json.loads(errors[-1]["data"])
+    # Either 401 (needs_keys) or 429 (rate_limited from bleed of prior test)
+    # is a valid outcome — both prove the error-framing works.
+    assert payload["status"] in (401, 429)
+    assert payload["detail"]["code"] in {"needs_keys", "rate_limited"}
+
+
 # ---------- /ai/agent (agent loop) ----------
 
 def test_agent_guest_401(mongo_seeded_project):

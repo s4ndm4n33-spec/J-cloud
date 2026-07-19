@@ -1,13 +1,16 @@
 """AI Coworker routes — chat / refine / governance / agent / telemetry / chain."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY, OWNER_USER_ID
 from core.agent_prompt import AGENT_PROMPT
@@ -122,7 +125,12 @@ def _check_verification_required(steps: list[dict]) -> Optional[str]:
 
 @router.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
-    """Gemini-first chat with BYOK failover chain."""
+    """Gemini-first chat with BYOK failover chain. Unary."""
+    return await _ai_chat_impl(payload, user)
+
+
+async def _ai_chat_impl(payload: dict, user: dict) -> dict:
+    """Core chat logic, callable from both the unary handler and the SSE wrapper."""
     ratelimit_take(user["user_id"], "ai_chat", _CHAT_CAP, _CHAT_REFILL)
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
@@ -210,6 +218,76 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         log.warning(f"ai_answer log (chat) failed: {e}")
 
     return {"conversation_id": conversation_id, "reply": reply, "meta": meta}
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming — keeps bytes flowing through the k8s ingress (120s hard cap)
+# by emitting `: heartbeat` comments every ≤15s while the LLM chain runs.
+# The final payload is delivered as an `event: done` frame identical to the
+# unary endpoint's JSON body.
+#
+# emergentintegrations exposes only a unary `send_message` — we don't have
+# true token streaming, so this is heartbeat-streaming. Adequate for the
+# ingress timeout; a UX upgrade to per-step streaming lives in a follow-up.
+# ---------------------------------------------------------------------------
+
+_HEARTBEAT_INTERVAL = 12.0  # seconds — well below the 15s ingress buffer
+
+
+def _sse_frame(event: str, data: Any) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data, default=str)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+async def _stream_task_with_heartbeats(
+    coro_factory,
+) -> AsyncIterator[str]:
+    """Run an awaitable, yielding `: heartbeat` SSE comments every
+    _HEARTBEAT_INTERVAL seconds until completion, then a final `event: done`
+    frame with the awaited result. On HTTPException, emit `event: error`.
+    """
+    task = asyncio.create_task(coro_factory())
+    try:
+        while True:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task),
+                                                timeout=_HEARTBEAT_INTERVAL)
+                yield _sse_frame("done", result)
+                return
+            except asyncio.TimeoutError:
+                yield f": heartbeat {int(time.time())}\n\n"
+            except HTTPException as e:
+                # Task raised HTTPException — surface as an SSE error frame.
+                yield _sse_frame("error", {
+                    "status": e.status_code,
+                    "detail": e.detail,
+                })
+                return
+    except asyncio.CancelledError:  # noqa: BLE001
+        task.cancel()
+        raise
+
+
+def _stream_response(gen: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        gen,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # nginx hint — disable proxy buffering
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/ai/chat/stream")
+async def ai_chat_stream(payload: dict, user: dict = Depends(get_current_user)):
+    """SSE variant of /ai/chat. Emits `: heartbeat` comments every 12s so the
+    ingress 120s timeout can't fire, then `event: done` with the same JSON
+    the unary endpoint returns."""
+    async def _run():
+        return await _ai_chat_impl(payload, user)
+    return _stream_response(_stream_task_with_heartbeats(_run))
 
 
 @router.get("/ai/chat/history")
@@ -326,6 +404,11 @@ async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
 @router.post("/ai/agent")
 async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     """Agentic chat — J plans, calls tools, returns transcript."""
+    return await _ai_agent_impl(payload, user)
+
+
+async def _ai_agent_impl(payload: dict, user: dict) -> dict:
+    """Core agent logic, callable from both the unary handler and the SSE wrapper."""
     ratelimit_take(user["user_id"], "ai_agent", _AGENT_CAP, _AGENT_REFILL)
     project_id = payload.get("project_id")
     if not project_id:
@@ -667,6 +750,16 @@ async def ai_agent_history(conversation_id: str, user: dict = Depends(get_curren
         {"conversation_id": conversation_id, "user_id": user["user_id"]}, {"_id": 0}
     ).sort("ts", 1).to_list(500)
     return {"messages": docs}
+
+
+@router.post("/ai/agent/stream")
+async def ai_agent_stream(payload: dict, user: dict = Depends(get_current_user)):
+    """SSE variant of /ai/agent. Heartbeats every 12s prevent the ingress 120s
+    timeout from firing during long multi-step agent runs. Final result is
+    delivered as `event: done` with the same JSON shape as the unary endpoint."""
+    async def _run():
+        return await _ai_agent_impl(payload, user)
+    return _stream_response(_stream_task_with_heartbeats(_run))
 
 
 @router.get("/ai/chain")

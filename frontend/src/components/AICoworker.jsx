@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone, Brain } from "@phosphor-icons/react";
-import { aiChat, aiAgent, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
+import { aiChatStream, aiAgentStream, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
 import KnowledgePanel from "@/components/KnowledgePanel";
@@ -120,6 +120,9 @@ function ChatTab({
   // Hands-free voice loop state
   const [voiceOn, setVoiceOn] = useState(false);
   const [voiceReply, setVoiceReply] = useState(null); // text J should speak next
+  // Heartbeat pulse count — increments on every SSE heartbeat frame so we
+  // can render "// J is thinking · 24s" while long agent turns run.
+  const [pulseCount, setPulseCount] = useState(0);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -184,32 +187,50 @@ function ChatTab({
     if (explicitText == null) setInput("");
     setMessages((prev) => [...prev, { role: "user", content: text }]);
     setBusy(true);
+    setPulseCount(0);
     try {
       if (agentMode) {
         if (!project) {
           setMessages((prev) => [...prev, { role: "assistant", content: "// open a project first" }]);
           return null;
         }
-        const r = await aiAgent({
+        // Streaming variant — heartbeats keep the ingress open past 120s.
+        let finalResult = null;
+        let streamErr = null;
+        await aiAgentStream({
           project_id: project.project_id,
           conversation_id: conversationId,
           message: text,
           auto_mode: autoMode,
+        }, {
+          onHeartbeat: () => setPulseCount((n) => n + 1),
+          onDone: (r) => { finalResult = r; },
+          onError: (e) => { streamErr = e; },
         });
+        if (streamErr) throw streamErr;
+        const r = finalResult;
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
         onAICall?.();
         return r.final || "";
       } else {
         const treeSummary = truncateTree(tree || []).join("\n");
-        const r = await aiChat({
+        let finalResult = null;
+        let streamErr = null;
+        await aiChatStream({
           conversation_id: conversationId,
           message: text,
           file_path: activeTab?.path,
           file_content: activeTab?.content?.slice(0, 8000),
           language: activeTab?.language,
           tree_summary: treeSummary,
+        }, {
+          onHeartbeat: () => setPulseCount((n) => n + 1),
+          onDone: (r) => { finalResult = r; },
+          onError: (e) => { streamErr = e; },
         });
+        if (streamErr) throw streamErr;
+        const r = finalResult;
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
         onAICall?.();
@@ -255,7 +276,16 @@ function ChatTab({
             }}
           />
         ))}
-        {busy && <div className="font-mono text-[0.65rem] text-cyan">// J is {agentMode ? "working" : "thinking"}…</div>}
+        {busy && (
+          <div className="font-mono text-[0.65rem] text-cyan" data-testid="chat-busy-indicator">
+            // J is {agentMode ? "working" : "thinking"}…
+            {pulseCount > 0 && (
+              <span className="text-alloy ml-2">
+                · pulse {pulseCount}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="px-2 pt-1 flex items-center gap-2 border-t border-cyan/10">

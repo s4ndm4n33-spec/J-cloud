@@ -106,6 +106,85 @@ export async function aiChat(payload) {
 export async function aiAgent(payload) {
   return (await client.post("/ai/agent", payload, { timeout: 180000 })).data;
 }
+
+// ----- Streaming variants (SSE + heartbeats, defeats 120s ingress timeout) -----
+//
+// Server sends `: heartbeat <ts>\n\n` comments every ≤12s, then a final
+// `event: done\ndata: {...}\n\n` frame with the same JSON payload as the
+// unary endpoint. On failure the server sends `event: error\ndata: {status, detail}`.
+//
+// We surface non-2xx and event:error frames as axios-shaped errors
+// (`err.response.data.detail`) so existing catch blocks keep working.
+
+async function _sseStream(url, body, { onHeartbeat, onDone, onError }) {
+  const token = getStoredToken();
+  const resp = await fetch(`${API}${url}`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body || {}),
+  });
+  if (!resp.ok) {
+    // Non-2xx (e.g. rate limit before stream started). Parse JSON error.
+    let detail;
+    try { detail = (await resp.json()).detail; } catch { detail = await resp.text(); }
+    const err = new Error(`HTTP ${resp.status}`);
+    err.response = { status: resp.status, data: { detail } };
+    throw err;
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let finished = false;
+  while (!finished) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      if (!frame.trim()) continue;
+      // Heartbeat frames start with ':' (SSE comment)
+      if (frame.startsWith(":")) { onHeartbeat?.(); continue; }
+      // Parse event + data
+      let ev = "message", data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) ev = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (ev === "done") {
+        try {
+          onDone?.(JSON.parse(data));
+        } catch (e) {
+          onError?.(new Error(`Bad done payload: ${e.message}`));
+        }
+        finished = true;
+        break;
+      }
+      if (ev === "error") {
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { parsed = { status: 500, detail: data }; }
+        const err = new Error(`SSE error ${parsed.status}`);
+        err.response = { status: parsed.status, data: { detail: parsed.detail } };
+        onError?.(err);
+        finished = true;
+        break;
+      }
+    }
+  }
+}
+
+export async function aiChatStream(payload, handlers) {
+  return _sseStream("/ai/chat/stream", payload, handlers);
+}
+export async function aiAgentStream(payload, handlers) {
+  return _sseStream("/ai/agent/stream", payload, handlers);
+}
 export async function aiRefine(payload) {
   return (await client.post("/ai/refine", payload)).data;
 }
