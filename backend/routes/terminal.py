@@ -9,8 +9,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from deps import consume_override, get_current_user, project_path, user_from_token
+from deps import consume_override, get_current_user, project_path, user_from_token, OWNER_USER_ID, db
 from core.destructive import scan_command
+from core.guardrails import check_outbound, log_flag as log_abuse_flag
 from core.pty_session import PtySession
 
 router = APIRouter()
@@ -25,6 +26,23 @@ async def terminal_exec(payload: dict, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail="Empty command")
 
     base = project_path(user["user_id"], project_id)
+
+    # Owner-only wall on outbound-network commands. No override — this is
+    # not an "integrity halt", it's a policy refusal for non-owner users.
+    outbound_block = check_outbound(cmd, user["user_id"], OWNER_USER_ID)
+    if outbound_block:
+        await log_abuse_flag(db, user["user_id"], "outbound_refused",
+                             matched=outbound_block.get("matched", ""),
+                             snippet=cmd, route="/terminal/exec")
+        return JSONResponse(
+            status_code=403,
+            content={
+                "blocked": True,
+                "reason": "outbound-owner-only",
+                "matched": outbound_block.get("matched"),
+                "message": outbound_block["error"],
+            },
+        )
 
     matches = scan_command(cmd)
     has_critical = any(m.severity == "critical" for m in matches)
@@ -110,7 +128,10 @@ def register_ws(app) -> None:
         await websocket.accept()
         _user_shell_count[uid] = _user_shell_count.get(uid, 0) + 1
 
-        session = PtySession(cwd=str(base))
+        session = PtySession(
+            cwd=str(base),
+            is_owner=bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID,
+        )
         try:
             await session.start()
         except OSError as e:

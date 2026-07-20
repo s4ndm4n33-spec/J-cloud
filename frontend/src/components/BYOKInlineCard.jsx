@@ -267,7 +267,6 @@ export function BYOKInlineCard({ code, onSaved }) {
                     setErr("");
                     setVerified(null);
                     setChosenModel("");
-                    setDailyCap("");
                   }}
                   className={`px-2.5 py-1 font-mono text-[0.7rem] tracking-widest border transition-colors ${
                     active

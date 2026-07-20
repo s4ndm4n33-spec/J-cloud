@@ -1,18 +1,22 @@
 """AI Coworker routes — chat / refine / governance / agent / telemetry / chain."""
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVILY_API_KEY, OWNER_USER_ID
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
+from core.guardrails import redact_substrate_leaks, log_flag as log_abuse_flag
 from core.keyvault import decrypt_key
 from core.migration_log import log_tool_event
 from core import knowledge as km
@@ -122,7 +126,12 @@ def _check_verification_required(steps: list[dict]) -> Optional[str]:
 
 @router.post("/ai/chat")
 async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
-    """Gemini-first chat with BYOK failover chain."""
+    """Gemini-first chat with BYOK failover chain. Unary."""
+    return await _ai_chat_impl(payload, user)
+
+
+async def _ai_chat_impl(payload: dict, user: dict) -> dict:
+    """Core chat logic, callable from both the unary handler and the SSE wrapper."""
     ratelimit_take(user["user_id"], "ai_chat", _CHAT_CAP, _CHAT_REFILL)
     conversation_id = payload.get("conversation_id") or f"conv_{uuid.uuid4().hex[:10]}"
     message = payload.get("message", "")
@@ -174,6 +183,17 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
             "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
             f"// last attempts: {len(meta['attempts'])}"
         )
+    else:
+        # Substrate secrecy filter — only apply to actual LLM output, never
+        # to synthetic status messages we generated ourselves.
+        original = reply
+        reply, leak_hits = redact_substrate_leaks(reply)
+        if leak_hits:
+            log.warning(f"substrate leak redacted (chat) user={user['user_id']} hits={leak_hits[:5]}")
+            meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(leak_hits[:5]),
+                                 snippet=original, route="/ai/chat")
 
     await db.messages.insert_one({
         "conversation_id": conversation_id,
@@ -210,6 +230,76 @@ async def ai_chat(payload: dict, user: dict = Depends(get_current_user)):
         log.warning(f"ai_answer log (chat) failed: {e}")
 
     return {"conversation_id": conversation_id, "reply": reply, "meta": meta}
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming — keeps bytes flowing through the k8s ingress (120s hard cap)
+# by emitting `: heartbeat` comments every ≤15s while the LLM chain runs.
+# The final payload is delivered as an `event: done` frame identical to the
+# unary endpoint's JSON body.
+#
+# emergentintegrations exposes only a unary `send_message` — we don't have
+# true token streaming, so this is heartbeat-streaming. Adequate for the
+# ingress timeout; a UX upgrade to per-step streaming lives in a follow-up.
+# ---------------------------------------------------------------------------
+
+_HEARTBEAT_INTERVAL = 12.0  # seconds — well below the 15s ingress buffer
+
+
+def _sse_frame(event: str, data: Any) -> str:
+    payload = data if isinstance(data, str) else json.dumps(data, default=str)
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+async def _stream_task_with_heartbeats(
+    coro_factory,
+) -> AsyncIterator[str]:
+    """Run an awaitable, yielding `: heartbeat` SSE comments every
+    _HEARTBEAT_INTERVAL seconds until completion, then a final `event: done`
+    frame with the awaited result. On HTTPException, emit `event: error`.
+    """
+    task = asyncio.create_task(coro_factory())
+    try:
+        while True:
+            try:
+                result = await asyncio.wait_for(asyncio.shield(task),
+                                                timeout=_HEARTBEAT_INTERVAL)
+                yield _sse_frame("done", result)
+                return
+            except asyncio.TimeoutError:
+                yield f": heartbeat {int(time.time())}\n\n"
+            except HTTPException as e:
+                # Task raised HTTPException — surface as an SSE error frame.
+                yield _sse_frame("error", {
+                    "status": e.status_code,
+                    "detail": e.detail,
+                })
+                return
+    except asyncio.CancelledError:  # noqa: BLE001
+        task.cancel()
+        raise
+
+
+def _stream_response(gen: AsyncIterator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        gen,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # nginx hint — disable proxy buffering
+            "Connection": "keep-alive",
+        },
+    )
+
+
+@router.post("/ai/chat/stream")
+async def ai_chat_stream(payload: dict, user: dict = Depends(get_current_user)):
+    """SSE variant of /ai/chat. Emits `: heartbeat` comments every 12s so the
+    ingress 120s timeout can't fire, then `event: done` with the same JSON
+    the unary endpoint returns."""
+    async def _run():
+        return await _ai_chat_impl(payload, user)
+    return _stream_response(_stream_task_with_heartbeats(_run))
 
 
 @router.get("/ai/chat/history")
@@ -250,6 +340,16 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
             "attempts": meta["attempts"],
         })
     refined = _strip_code_fences(reply)
+    # Substrate secrecy filter on refined code output too — J shouldn't be
+    # coerced into leaking internals via a "refine this file" attack.
+    original_refined = refined
+    refined, leak_hits = redact_substrate_leaks(refined)
+    if leak_hits:
+        log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
+        meta["substrate_redacted"] = True
+        await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                             matched=";".join(leak_hits[:5]),
+                             snippet=original_refined, route="/ai/refine")
     ast_report = fm_evaluate(refined, language).to_dict()
     danger = destructive_scan(refined)
     return {
@@ -326,6 +426,11 @@ async def ai_telemetry(limit: int = 5, user: dict = Depends(get_current_user)):
 @router.post("/ai/agent")
 async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
     """Agentic chat — J plans, calls tools, returns transcript."""
+    return await _ai_agent_impl(payload, user)
+
+
+async def _ai_agent_impl(payload: dict, user: dict) -> dict:
+    """Core agent logic, callable from both the unary handler and the SSE wrapper."""
     ratelimit_take(user["user_id"], "ai_agent", _AGENT_CAP, _AGENT_REFILL)
     project_id = payload.get("project_id")
     if not project_id:
@@ -439,6 +544,16 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
 
         prose = strip_tool_calls(reply)
         calls = parse_tool_calls(reply)
+        # Substrate secrecy filter on the prose the user actually sees. Tool
+        # calls are unaffected (they're structured invocations, not disclosure).
+        original_prose = prose
+        prose, prose_leaks = redact_substrate_leaks(prose)
+        if prose_leaks:
+            log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
+            meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(prose_leaks[:5]),
+                                 snippet=original_prose, route=f"/ai/agent#step{step_idx}")
         steps.append({"type": "assistant", "text": prose, "raw": reply, "meta": meta})
         transcript_for_llm.append(f"[J]\n{reply}")
 
@@ -603,6 +718,15 @@ async def ai_agent(payload: dict, user: dict = Depends(get_current_user)):
         done_reason = "max_steps_reached"
         final_summary = "// Stopped at max_steps. Send another message to continue."
 
+    # Final substrate-secrecy pass on the summary the user reads at the end.
+    original_final = final_summary
+    final_summary, _sfl = redact_substrate_leaks(final_summary)
+    if _sfl:
+        log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
+        await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                             matched=";".join(_sfl[:5]),
+                             snippet=original_final, route="/ai/agent#final")
+
     await db.messages.insert_one({
         "conversation_id": conversation_id, "user_id": user["user_id"],
         "role": "assistant", "content": final_summary,
@@ -667,6 +791,16 @@ async def ai_agent_history(conversation_id: str, user: dict = Depends(get_curren
         {"conversation_id": conversation_id, "user_id": user["user_id"]}, {"_id": 0}
     ).sort("ts", 1).to_list(500)
     return {"messages": docs}
+
+
+@router.post("/ai/agent/stream")
+async def ai_agent_stream(payload: dict, user: dict = Depends(get_current_user)):
+    """SSE variant of /ai/agent. Heartbeats every 12s prevent the ingress 120s
+    timeout from firing during long multi-step agent runs. Final result is
+    delivered as `event: done` with the same JSON shape as the unary endpoint."""
+    async def _run():
+        return await _ai_agent_impl(payload, user)
+    return _stream_response(_stream_task_with_heartbeats(_run))
 
 
 @router.get("/ai/chain")

@@ -78,6 +78,45 @@ trap __j_destructive_refuse DEBUG
 
 # Welcome line
 printf '\033[36m// Gauntlet DevSpace · interactive shell · type `j-help` for the command reference.\033[0m\n'
+"""
+
+
+# Public bashrc = owner bashrc + a second DEBUG trap that hard-refuses
+# outbound-network commands. Owner sessions use OWNER_BASHRC; every other
+# user gets PUBLIC_BASHRC. Chosen at PTY fork time — nothing the user can
+# `export` or `readonly` around from inside the shell.
+OWNER_BASHRC = BASHRC_CONTENT  # alias for clarity
+
+PUBLIC_BASHRC = BASHRC_CONTENT.replace(
+    "__j_destructive_refuse() {\n    # Only fire at top-level interactive depth, never inside our own\n    # helper functions (FUNCNAME has only the trap itself at depth 1).\n    [[ ${#FUNCNAME[@]} -gt 1 ]] && return 0",
+    r"""__j_destructive_refuse() {
+    # Only fire at top-level interactive depth, never inside our own
+    # helper functions (FUNCNAME has only the trap itself at depth 1).
+    [[ ${#FUNCNAME[@]} -gt 1 ]] && return 0
+    local cmd_ob="$BASH_COMMAND"
+    # --- outbound-network refusal (owner-only wall) ---
+    if [[ "$cmd_ob" =~ (^|[[:space:]\;\&\|\`])(curl|wget|nc|ncat|nmap|ssh|scp|sftp|telnet|ftp)([[:space:]]|$) ]]; then
+        printf '\033[31m[OWNER-ONLY] outbound-network command refused: %s\033[0m\n' "$cmd_ob" >&2
+        printf '\033[33m// this deployment restricts outbound commands to the owner.\033[0m\n' >&2
+        return 1
+    fi
+    if [[ "$cmd_ob" == */dev/tcp/* ]]; then
+        printf '\033[31m[OWNER-ONLY] raw TCP socket refused.\033[0m\n' >&2
+        return 1
+    fi
+    if [[ "$cmd_ob" =~ git[[:space:]]+(clone|push|pull|fetch|remote)[[:space:]] ]]; then
+        printf '\033[31m[OWNER-ONLY] remote git operation refused: %s\033[0m\n' "$cmd_ob" >&2
+        return 1
+    fi
+    if [[ "$cmd_ob" =~ (pip|pip3)[[:space:]]+install[[:space:]]+(git\+|https?://) ]]; then
+        printf '\033[31m[OWNER-ONLY] remote pip install refused.\033[0m\n' >&2
+        return 1
+    fi""",
+)
+
+
+# The j-help function content (identical for both owner and public shells).
+_JHELP_BODY = r"""
 
 j-help() {
     printf '\033[36m== GAUNTLET DEVSPACE TERMINAL ==\033[0m\n\n'
@@ -114,21 +153,28 @@ j-help() {
 }
 """
 
+OWNER_BASHRC = OWNER_BASHRC + _JHELP_BODY
+PUBLIC_BASHRC = PUBLIC_BASHRC + _JHELP_BODY
 
-def _ensure_rcfile() -> str:
-    """Write the bash rcfile, content-addressed so edits propagate automatically."""
+
+def _ensure_rcfile(is_owner: bool = False) -> str:
+    """Write the appropriate bash rcfile, content-addressed so edits
+    propagate automatically. Owner and public users get different traps."""
     import hashlib
-    h = hashlib.sha1(BASHRC_CONTENT.encode("utf-8")).hexdigest()[:8]
-    p = Path(f"/tmp/j_devspace_bashrc_{h}")
+    content = OWNER_BASHRC if is_owner else PUBLIC_BASHRC
+    tag = "owner" if is_owner else "public"
+    h = hashlib.sha1(content.encode("utf-8")).hexdigest()[:8]
+    p = Path(f"/tmp/j_devspace_bashrc_{tag}_{h}")
     if not p.exists():
-        p.write_text(BASHRC_CONTENT)
+        p.write_text(content)
     return str(p)
 
 
 class PtySession:
     """A single bash subprocess attached to a PTY pair, with async I/O."""
 
-    def __init__(self, cwd: str, env: Optional[dict] = None):
+    def __init__(self, cwd: str, env: Optional[dict] = None,
+                 is_owner: bool = False):
         self.cwd = cwd
         self.pid: Optional[int] = None
         self.master_fd: int = -1
@@ -136,9 +182,10 @@ class PtySession:
         self._read_task: Optional[asyncio.Task] = None
         self._read_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._env = env or {}
+        self._is_owner = bool(is_owner)
 
     async def start(self) -> None:
-        rc = _ensure_rcfile()
+        rc = _ensure_rcfile(is_owner=self._is_owner)
         pid, master_fd = pty.fork()
         if pid == 0:
             # Child: exec bash with rcfile
