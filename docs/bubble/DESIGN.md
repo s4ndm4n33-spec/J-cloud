@@ -188,9 +188,13 @@ body {
 
 ## Screenshot exemplars
 
-For visual reference, Bubble builder should look at these screenshots from Gauntlet DevSpace itself:
-- `docs/design/screenshots/ide-main.png` — cockpit layout, sidebar + main
-- `docs/design/screenshots/admin-panel.png` — the abuse dashboard (nearest analog to what Training Console should feel like)
-- `docs/design/screenshots/byok-card.png` — form styling, buttons, inputs
+For visual reference, Bubble builder should look at the live Gauntlet DevSpace preview environment (owner login) — these are the three screens whose look the Training Console should match:
 
-If those files don't exist yet, the Emergent side will drop them into `docs/design/screenshots/` before the Bubble handoff.
+- **IDE main** — cockpit layout, sidebar + main + chat panel. URL: `/ide` (owner login)
+- **Admin panel** — the abuse dashboard (nearest analog to what Training Console should feel like). URL: `/admin` (owner login)
+- **BYOK inline card** — form styling, buttons, chips, inputs. URL: `/ide` while unauthenticated (non-owner triggers the card by sending any chat message)
+
+Preview environment: `https://gauntlet-devspace.preview.emergentagent.com`
+Production (view-only, do not test against): `https://blue-j-gauntlet.com`
+
+The design tokens in this document match those UIs exactly — colors, typography, spacing, borders. Emergent will provide preview credentials to the Bubble builder on request (they're not committed to the repo).

@@ -4,7 +4,25 @@ This is the counterpart to `API_CONTRACT.md`. Everything below is a **to-build**
 
 **Scope discipline:** every endpoint is owner-only, checked against `OWNER_USER_ID` (already exposed via `deps.OWNER_USER_ID`). Non-owner → 403 `owner_only`. Bubble treats 403 as terminal, 401 as re-auth needed.
 
-## Estimated effort
+## Status as of 2026-07-20
+
+**✅ Stub layer LIVE** — `backend/routes/training.py` registered, all 20 endpoints from `API_CONTRACT.md` return correctly-shaped responses. Bubble can integrate + wire UI immediately. Preview URL:
+`https://gauntlet-devspace.preview.emergentagent.com/api/training/health`
+
+What's stubbed:
+- All GET endpoints return real Mongo reads against empty collections (returns `[]` and correct sub-shapes)
+- `POST /training/datasets`, `/training/runs`, `/training/eval` insert into Mongo and return the row (status set to `queued` / `exporting` — never advances without the workers below)
+- `POST /training/runs/{id}/promote`, `/training/models/{id}/promote`, `/training/models/rollback` all work end-to-end against `training_models` collection — the promote flow is fully functional even without training data
+- Owner-only guard enforced everywhere: 403 for non-owners
+
+What's NOT stubbed (still to-build):
+- `backend/training/exporter.py` — chronicle → SFT/DPO JSONL → S3 upload
+- `backend/training/modal_client.py` — Modal SDK dispatch + task tracking
+- `backend/training/webhooks.py` — receive Modal progress + completion callbacks (route to be added under `/api/training/webhooks/modal/{run_id}`)
+- `backend/training/eval_runner.py` — read `golden.jsonl`, dispatch both models, run Five Masters, write summary
+- `llm_chain.resolve_chain()` — dynamic head lookup so a promoted champion actually gets used at runtime (currently `TASK_CHAINS` is static)
+
+## Estimated remaining effort
 
 | Layer | Files touched / created | Effort |
 |---|---|---|

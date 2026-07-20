@@ -238,4 +238,46 @@ Every guardrail hit now writes to `db.moderation_flags` and shows up in an owner
 - **3 new backend tests** (`test_admin_flags_owner_only`, `test_outbound_refusal_writes_flag`, `test_substrate_leak_writes_flag`) → **28/28 owner-lock, 150/150 full suite green**
 - **Playwright verified**: non-owner sees 403 error card + "No flags. J is behaving." empty state. Owner sees populated dashboard with 10 flag rows, category filter toggles correctly, breakdown matches DB state (6 OUTBOUND from `user_test_devspace`, 4 SUBSTRATE from owner's own prompt-dump tests).
 
+## 2026-07-20 — Training Console (Bubble.io handoff + backend stubs)
+Full spec package + working backend stubs so the Training Console can be built externally on Bubble.io while heavy lifting stays on our FastAPI.
+
+### Bubble.io handoff package
+`/app/docs/bubble/` — 8 markdown docs, ~9k words, zero secrets, zipped at `/app/docs/bubble-training-console-handoff.zip` (28 KB):
+- **`HANDOFF.md`** — meta-doc, "start here"
+- **`PROMPT.md`** — the hero product spec for Bubble AI (9 pages, complete flow, not tiered)
+- **`API_CONTRACT.md`** — all 20 REST endpoints Bubble consumes, request/response shapes
+- **`DATA_MODEL.md`** — 6 Bubble Data Types (metadata only, S3 holds JSONL/adapters)
+- **`UI_SPEC.md`** — every page, element, and interaction with data-testids
+- **`WORKFLOWS.md`** — 20+ Bubble workflow definitions including polling loops with iteration caps
+- **`DESIGN.md`** — CSS tokens matching Gauntlet aesthetic; points at live preview URL for visual reference
+- **`BACKEND_STUBS.md`** — the counterpart implementation checklist
+
+### Backend stubs (LIVE)
+`backend/routes/training.py` — 20 endpoints registered in `server.py`. All owner-only. All return correctly-shaped JSON. Structure:
+- Health + config: `GET /training/health`, `GET /training/base_models`
+- Dashboard: `GET /training/stats` (real Mongo counts of chronicle passes + DPO candidates), `GET /training/activity`
+- Datasets: `GET/POST/DELETE /training/datasets`, `GET /training/datasets/{id}`
+- Runs: `GET/POST /training/runs`, `GET /training/runs/{id}`, `POST /training/runs/{id}/cancel|promote`, `GET /training/runs/{id}/adapter`
+- Models: `GET /training/models`, `POST /training/models/{id}/promote`, `POST /training/models/rollback`, `DELETE /training/models/{id}`
+- Eval: `POST /training/eval`, `GET /training/eval/{id}`
+
+New Mongo collections: `training_datasets`, `training_runs`, `training_models`, `training_evals`, `training_events`. Empty by default.
+
+**Bubble's first integration test passes**: `GET /api/training/health` with owner bearer returns `{ok:true, owner:true, backend_version:"0.9.0", modal_configured:false, storage_configured:false, training_enabled:false}`. Non-owner gets `owner:false`, same 200. Bubble uses that to decide auth flow.
+
+### What's still to-build (before real training)
+- `backend/training/exporter.py` — chronicle → SFT/DPO JSONL → S3
+- `backend/training/modal_client.py` — Modal SDK dispatch
+- `backend/training/webhooks.py` — receive Modal callbacks
+- `backend/training/eval_runner.py` — golden set + Five Masters
+- `llm_chain.resolve_chain()` — dynamic head lookup for promoted champions
+
+Estimated ~4 dev-days. Bubble can build against stubs in parallel.
+
+### Verification
+- All 20 endpoints curl-tested with owner + non-owner tokens; shapes match contract
+- POST `/datasets` creates row in Mongo with `status:"exporting"`, GET reads it back; DELETE cascades protection works
+- Promote/rollback lifecycle end-to-end functional (updates `is_current_champion` + writes activity event)
+- **150/150 backend tests still green**, zero regressions
+
 
