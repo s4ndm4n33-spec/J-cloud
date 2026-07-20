@@ -1,12 +1,13 @@
-"""Training platform API — endpoints consumed by the Bubble.io Training Console.
+"""Training platform API — endpoints consumed by the Training Console frontend
+(bolt.new-generated React app, previously spec'd for Bubble.io).
 
-Every route is OWNER-ONLY (403 for any non-owner user_id). Bubble treats the
-whole surface as a black-box REST API — it never sees Mongo directly.
+Every route is OWNER-ONLY (403 for any non-owner user_id). The frontend treats
+the whole surface as a black-box REST API — it never sees Mongo directly.
 
 These are the STUB implementations. Real Modal integration + JSONL exporter
 live in `backend/training/*` (to be built). For now the endpoints return
-correctly-shaped empty data so Bubble can wire the UI and integration-test
-against a live backend.
+correctly-shaped empty data so the frontend can wire the UI and
+integration-test against a live backend.
 
 See `/app/docs/bubble/API_CONTRACT.md` for the full contract.
 See `/app/docs/bubble/BACKEND_STUBS.md` for the implementation roadmap.
@@ -404,6 +405,102 @@ async def delete_model(model_id: str, user: dict = Depends(get_current_user)):
             pass
     await db.training_models.delete_one({"model_id": model_id})
     return {"ok": True, "model_id": model_id}
+
+
+# ---------------------------------------------------------------------------
+# DPO candidate review (bolt.new / Training Console)
+# ---------------------------------------------------------------------------
+#
+# Every call to `auto_learn_from_search` stashes rejected Tavily results in
+# `knowledge_dpo_candidates` paired with each kept fact. The reviewer surfaces
+# those pairs so the owner can approve high-signal preference data before it
+# lands in a DPO dataset export.
+
+@router.get("/training/dpo/review")
+async def list_dpo_candidates(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None, description="pending|approved|rejected"),
+    user: dict = Depends(get_current_user),
+):
+    _owner_only(user)
+    q: dict = {}
+    if status:
+        q["status"] = status
+    else:
+        # Default view = anything not yet triaged.
+        q["status"] = {"$in": [None, "pending"]}
+    # Mongo won't match {"$in": [None, ...]} against missing keys; use $exists.
+    if status is None:
+        q = {"$or": [{"status": {"$exists": False}}, {"status": "pending"}]}
+    cursor = db.knowledge_dpo_candidates.find(q, {"_id": 0}).sort("ts", -1)
+    docs = await cursor.to_list(limit)
+    # Batch-fetch the chosen facts referenced by these candidates.
+    fact_ids = list({d["chosen_fact_id"] for d in docs if d.get("chosen_fact_id")})
+    fact_map: dict = {}
+    if fact_ids:
+        async for f in db.knowledge_facts.find(
+            {"id": {"$in": fact_ids}},
+            {"_id": 0, "id": 1, "title": 1, "body": 1, "url": 1, "category": 1},
+        ):
+            fact_map[f["id"]] = f
+    items = []
+    for d in docs:
+        chosen = fact_map.get(d.get("chosen_fact_id")) or {
+            "id": d.get("chosen_fact_id"),
+            "title": "(chosen fact deleted)",
+            "body": "",
+            "url": None,
+        }
+        items.append({
+            "id": d["id"],
+            "query": d.get("query"),
+            "category": d.get("category"),
+            "status": d.get("status") or "pending",
+            "ts": d.get("ts"),
+            "reject_reason": d.get("reject_reason"),
+            "chosen": {
+                "id": chosen.get("id"),
+                "title": chosen.get("title"),
+                "body": chosen.get("body"),
+                "url": chosen.get("url"),
+            },
+            "rejected": {
+                "title": d.get("rejected_title"),
+                "body": d.get("rejected_body"),
+                "url": d.get("rejected_url"),
+                "tavily_score": d.get("rejected_tavily_score"),
+            },
+        })
+    total = await db.knowledge_dpo_candidates.count_documents(q)
+    return {"items": items, "total": total}
+
+
+@router.post("/training/dpo/{candidate_id}/approve")
+async def approve_dpo_candidate(candidate_id: str,
+                                user: dict = Depends(get_current_user)):
+    _owner_only(user)
+    r = await db.knowledge_dpo_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "approved", "reviewed_at": _now(),
+                  "reviewed_by": user["user_id"]}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="candidate_not_found")
+    return {"ok": True, "id": candidate_id, "status": "approved"}
+
+
+@router.post("/training/dpo/{candidate_id}/reject")
+async def reject_dpo_candidate(candidate_id: str,
+                               user: dict = Depends(get_current_user)):
+    _owner_only(user)
+    r = await db.knowledge_dpo_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "rejected", "reviewed_at": _now(),
+                  "reviewed_by": user["user_id"]}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="candidate_not_found")
+    return {"ok": True, "id": candidate_id, "status": "rejected"}
 
 
 # ---------------------------------------------------------------------------

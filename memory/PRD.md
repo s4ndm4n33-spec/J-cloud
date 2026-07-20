@@ -281,3 +281,27 @@ Estimated ~4 dev-days. Bubble can build against stubs in parallel.
 - **150/150 backend tests still green**, zero regressions
 
 
+## 2026-02-01 — bolt.new pivot + DPO reviewer endpoints
+User rejected Bubble.io (paywall) and generated the Training Console via **bolt.new** instead. Live at https://bolt-integration-wthz.bolt.host — all 5 screens shipped (Dashboard, Runs list, DPO reviewer, Eval viewer, Settings). Neon/dark Gauntlet aesthetic preserved by the adapter prompt.
+
+### Adapter prompt strategy
+Rather than rewriting the entire 8-doc Bubble spec for bolt.new, I gave the user a one-page **adapter prepend** that instructed bolt.new to (a) ignore Bubble-specific terminology, (b) build in Vite + React + TypeScript + Tailwind + shadcn/ui, (c) treat `API_CONTRACT.md` as authoritative and everything else as design intent. Result: bolt.new produced a working scaffold in one shot.
+
+### 3 new endpoints (DPO Reviewer — the one screen bolt.new invented that didn't exist)
+- `GET  /api/training/dpo/review?limit=&status=` — lists pending/approved/rejected candidates joined with their chosen `knowledge_facts` row
+- `POST /api/training/dpo/{id}/approve` — flips `status:"approved"` + `reviewed_at` + `reviewed_by`
+- `POST /api/training/dpo/{id}/reject`  — flips `status:"rejected"` + `reviewed_at` + `reviewed_by`
+
+Path deliberately mounted at `/dpo/review` (not `/dpo`) because `GET /api/training/dpo` was already claimed by the JSONL exporter in `knowledge.py`. API_CONTRACT.md updated (endpoint count now **23**).
+
+### Verified
+- Owner GET returns 34 real pending pairs with joined chosen-fact bodies
+- Non-owner → 403; missing token → 401; unknown ID → 404
+- Approve/reject flow is idempotent; status transitions correctly
+- Existing JSONL exporter at `GET /api/training/dpo` still functional (no regression)
+- CORS preflight from `bolt-integration-wthz.bolt.host` returns `access-control-allow-origin: *` — preview backend is directly usable from the bolt.host app; owner just pastes preview URL + `test_owner_session_001` bearer into Settings
+
+### Still pending for real training
+Same list as 2026-07-20 entry: `exporter.py`, `modal_client.py`, `webhooks.py`, `eval_runner.py`, dynamic champion lookup in `llm_chain`.
+
+
