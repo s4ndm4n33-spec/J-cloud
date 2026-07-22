@@ -31,6 +31,7 @@ image = (
         "bitsandbytes==0.43.3",
         "safetensors==0.4.4",
         "sentencepiece==0.2.0",
+        "rich>=13.0",
         "boto3>=1.34",
         "httpx>=0.27",
     )
@@ -42,8 +43,8 @@ hf_volume = modal.Volume.from_name("hf-cache", create_if_missing=True)
 BASE_MODEL_MAP = {
     "qwen2.5-coder-7b":     "Qwen/Qwen2.5-Coder-7B-Instruct",
     "qwen2.5-14b-instruct": "Qwen/Qwen2.5-14B-Instruct",
-    "llama-3.1-8b":         "meta-llama/Llama-3.1-8B-Instruct",
-    "mistral-7b":           "mistralai/Mistral-7B-v0.3",
+    "llama-3.1-8b-instruct": "meta-llama/Llama-3.1-8B-Instruct",
+    "mistral-7b-v0.3":      "mistralai/Mistral-7B-v0.3",
 }
 
 

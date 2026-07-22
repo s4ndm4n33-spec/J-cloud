@@ -260,7 +260,8 @@ async def list_runs(limit: int = Query(50, ge=1, le=200),
                     user: dict = Depends(get_current_user)):
     _owner_only(user)
     q: dict = {}
-    if status:
+    # bolt sends `status=all` for the unfiltered tab; treat that as no filter.
+    if status and status.lower() != "all":
         q["status"] = status
     docs = await db.training_runs.find(
         q, {"_id": 0, "loss_history": 0}
@@ -385,7 +386,9 @@ async def get_run(run_id: str, user: dict = Depends(get_current_user)):
     doc = await db.training_runs.find_one({"run_id": run_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="run_not_found")
-    return doc
+    # bolt reads the run under a `run` key; also return fields at top level
+    # for older callers.
+    return {**doc, "run": doc}
 
 
 @router.post("/training/runs/{run_id}/cancel")
