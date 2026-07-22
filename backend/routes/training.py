@@ -83,8 +83,10 @@ async def base_models(user: dict = Depends(get_current_user)):
 @router.get("/training/stats")
 async def training_stats(user: dict = Depends(get_current_user)):
     _owner_only(user)
+    # Note: chronicle_entries store `verdict` at the top level (not nested
+    # under `body`) and the passing value is "passed" (not "pass").
     verified = await db.chronicle_entries.count_documents({
-        "kind": "ai_answer", "body.verdict": "pass",
+        "kind": "ai_answer", "verdict": "passed",
     })
     # DPO candidates already stashed by J:MIND on reject
     dpo_pairs = await db.knowledge_dpo_candidates.count_documents({})
