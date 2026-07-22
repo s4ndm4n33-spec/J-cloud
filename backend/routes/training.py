@@ -316,8 +316,60 @@ async def create_run(payload: dict, user: dict = Depends(get_current_user)):
     }
     await db.training_runs.insert_one(doc)
     doc.pop("_id", None)
-    # TODO: dispatch to `backend/training/modal_client.dispatch(run_id, doc)`.
-    # Modal will webhook back to update progress + final status.
+
+    # Dispatch to Modal. `smoke_test=True` in the payload runs the CPU-only
+    # verification path (~$0, ~5s) instead of the real GPU trainer.
+    from training import modal_client
+    from training import storage as storage_mod
+
+    smoke = bool(payload.get("smoke_test"))
+    webhook_url = (os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                   + "/api/training/webhook")
+    webhook_secret = os.environ.get("TRAINING_WEBHOOK_SECRET", "")
+
+    try:
+        if smoke:
+            task_id = modal_client.dispatch_smoke(
+                run_id=run_id,
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
+            )
+        else:
+            # Resolve dataset URL. If R2, use presigned; else expect a public URL.
+            if ds.get("storage") == "r2":
+                dataset_url = storage_mod.presign_get(
+                    ds["s3_key"], expires=6 * 3600)
+            else:
+                dataset_url = ds.get("download_url") or ""
+            task_id = modal_client.dispatch(
+                run_id=run_id,
+                base_model=doc["base_model"],
+                training_method=doc["training_method"],
+                dataset_url=dataset_url,
+                lora_rank=doc["lora_rank"],
+                learning_rate=doc["learning_rate"],
+                epochs=doc["epochs"],
+                batch_size=doc["batch_size"],
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
+            )
+        await db.training_runs.update_one(
+            {"run_id": run_id},
+            {"$set": {"modal_task_id": task_id, "status": "running",
+                      "smoke_test": smoke}},
+        )
+        doc["modal_task_id"] = task_id
+        doc["status"] = "running"
+        doc["smoke_test"] = smoke
+    except Exception as e:  # noqa: BLE001
+        await db.training_runs.update_one(
+            {"run_id": run_id},
+            {"$set": {"status": "failed",
+                      "error": f"dispatch failed: {str(e)[:400]}"}},
+        )
+        doc["status"] = "failed"
+        doc["error"] = f"dispatch failed: {str(e)[:400]}"
+
     return doc
 
 
@@ -338,7 +390,9 @@ async def cancel_run(run_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="run_not_found")
     if doc["status"] in {"complete", "failed", "cancelled"}:
         return {"ok": True, "run_id": run_id, "status": doc["status"]}
-    # TODO: also cancel Modal task via `modal_client.cancel(doc["modal_task_id"])`
+    if doc.get("modal_task_id"):
+        from training import modal_client
+        modal_client.cancel(doc["modal_task_id"])
     await db.training_runs.update_one(
         {"run_id": run_id},
         {"$set": {"status": "cancelled", "completed_at": _now()}},
