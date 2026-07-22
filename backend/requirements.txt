@@ -67,6 +67,7 @@ mdurl==0.1.2
 mmh3==5.2.1
 motor==3.3.1
 multidict==6.7.1
+mutagen==1.48.1
 mypy==2.1.0
 mypy_extensions==1.1.0
 numpy==2.4.6
@@ -103,6 +104,8 @@ python-jose==3.5.0
 python-multipart==0.0.29
 pytokens==0.4.1
 PyYAML==6.0.3
+pyzbar==0.1.9
+qrcode==8.2
 referencing==0.37.0
 regex==2026.5.9
 requests==2.34.2
@@ -113,6 +116,7 @@ rpds-py==0.30.0
 rsa==4.9.1
 s3transfer==0.17.0
 s5cmd==0.2.0
+segno==1.6.6
 shellingham==1.5.4
 six==1.17.0
 smmap==5.0.3
