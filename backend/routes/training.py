@@ -14,14 +14,19 @@ See `/app/docs/bubble/BACKEND_STUBS.md` for the implementation roadmap.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from deps import db, get_current_user, OWNER_USER_ID
+from training import exporter as export_mod
+from training import storage as storage_mod
 
 router = APIRouter()
 
@@ -147,9 +152,78 @@ async def create_dataset(payload: dict, user: dict = Depends(get_current_user)):
     }
     await db.training_datasets.insert_one(doc)
     doc.pop("_id", None)
-    # TODO: dispatch to `backend/training/exporter.py`. For now the doc sits at
-    # `status=exporting` until the exporter worker is built.
+
+    # Fire the exporter in the background. When done it flips the row to
+    # `status=ready` (or `status=failed`).
+    filter_val = payload.get("filter", "all").lower()  # "all" | "approved"
+
+    async def _run_export():
+        try:
+            if fmt == "sft":
+                result = await export_mod.export_sft(
+                    db, dataset_id, row_limit=doc["row_limit"],
+                    date_from=doc.get("date_from"),
+                    date_to=doc.get("date_to"),
+                )
+            else:
+                result = await export_mod.export_dpo(
+                    db, dataset_id, row_limit=doc["row_limit"],
+                    only_approved=(filter_val == "approved"),
+                )
+            update: dict = {
+                "status": "ready",
+                "row_count": result["row_count"],
+                "size_mb": round(result["size_bytes"] / (1024 * 1024), 3),
+                "download_url": result["download_url"],
+                "skipped": result.get("skipped", 0),
+                "s3_key": result.get("s3_key"),
+            }
+            # If storage fell back to local, rewrite the URL to point at our
+            # self-serve endpoint (which needs auth).
+            if storage_mod.is_local_url(result["download_url"]):
+                update["download_url"] = f"/api/training/datasets/{dataset_id}/download"
+                update["storage"] = "local"
+            else:
+                update["storage"] = "r2"
+            await db.training_datasets.update_one({"id": dataset_id}, {"$set": update})
+        except Exception as e:  # noqa: BLE001
+            await db.training_datasets.update_one(
+                {"id": dataset_id},
+                {"$set": {"status": "failed", "error": str(e)[:500]}},
+            )
+
+    asyncio.create_task(_run_export())
     return doc
+
+
+@router.get("/training/datasets/{dataset_id}/download")
+async def download_dataset(dataset_id: str,
+                           user: dict = Depends(get_current_user)):
+    """Serves the JSONL file when we're on local-storage fallback (no R2).
+    Owner-only. Returns the raw JSONL as an attachment."""
+    _owner_only(user)
+    doc = await db.training_datasets.find_one({"id": dataset_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="dataset_not_found")
+    if doc.get("status") != "ready":
+        raise HTTPException(status_code=400,
+                            detail=f"dataset not ready (status={doc.get('status')})")
+    if doc.get("storage") != "local":
+        # R2 case — redirect to the presigned URL.
+        from fastapi.responses import RedirectResponse
+        if not doc.get("download_url"):
+            raise HTTPException(status_code=404, detail="no_download_url")
+        return RedirectResponse(doc["download_url"], status_code=302)
+    # Local fallback — stream from disk.
+    key = doc.get("s3_key") or f"datasets/{dataset_id}.{doc['format']}.jsonl"
+    path = storage_mod.local_path(key.replace("/", "_"))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="file_not_found_on_disk")
+    return FileResponse(
+        path=path,
+        media_type="application/x-ndjson",
+        filename=f"{dataset_id}.{doc['format']}.jsonl",
+    )
 
 
 @router.get("/training/datasets/{dataset_id}")
