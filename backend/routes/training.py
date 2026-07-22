@@ -340,7 +340,13 @@ async def create_run(payload: dict, user: dict = Depends(get_current_user)):
                 dataset_url = storage_mod.presign_get(
                     ds["s3_key"], expires=6 * 3600)
             else:
-                dataset_url = ds.get("download_url") or ""
+                dl = ds.get("download_url") or ""
+                # Local-storage fallback returns a relative path — Modal
+                # containers need a fully-qualified URL, so prefix it.
+                if dl and not dl.startswith(("http://", "https://")):
+                    base = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                    dl = f"{base}{dl}" if base else dl
+                dataset_url = dl
             task_id = modal_client.dispatch(
                 run_id=run_id,
                 base_model=doc["base_model"],
