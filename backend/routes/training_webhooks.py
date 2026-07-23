@@ -83,6 +83,38 @@ async def modal_webhook(request: Request):
 
     await db.training_runs.update_one({"run_id": run_id}, ops)
 
+    # On a real (non-smoke) successful completion, mint a training_models row
+    # so the adapter shows up in bolt's Models page and can be promoted.
+    if (status == "complete"
+            and payload.get("adapter_url")
+            and not payload.get("smoke_test")):
+        run_doc = await db.training_runs.find_one({"run_id": run_id}, {"_id": 0})
+        if run_doc:
+            model_id = f"m_{run_id.split('_', 1)[-1]}"
+            base_short = (run_doc.get("base_model") or "unknown").split("-")[0]
+            existing = await db.training_models.count_documents(
+                {"base_model": run_doc.get("base_model")})
+            display_name = f"j-{base_short}-lora-v{existing + 1}"
+            await db.training_models.update_one(
+                {"model_id": model_id},
+                {"$setOnInsert": {
+                    "model_id": model_id,
+                    "name": display_name,
+                    "run_id": run_id,
+                    "base_model": run_doc.get("base_model"),
+                    "training_method": run_doc.get("training_method"),
+                    "adapter_url": payload.get("adapter_url"),
+                    "final_loss": payload.get("final_loss"),
+                    "dataset_id": run_doc.get("dataset_id"),
+                    "lora_rank": run_doc.get("lora_rank"),
+                    "epochs": run_doc.get("epochs"),
+                    "is_current_champion": False,
+                    "eval_score": None,
+                    "created_at": _now(),
+                }},
+                upsert=True,
+            )
+
     if status in ("complete", "failed"):
         await db.training_events.insert_one({
             "event_id": f"evt_{run_id}_{status}",

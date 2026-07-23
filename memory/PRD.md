@@ -305,3 +305,53 @@ Path deliberately mounted at `/dpo/review` (not `/dpo`) because `GET /api/traini
 Same list as 2026-07-20 entry: `exporter.py`, `modal_client.py`, `webhooks.py`, `eval_runner.py`, dynamic champion lookup in `llm_chain`.
 
 
+
+## 2026-07-22/23 — Training pipeline SHIPS, chat persistence, owner introspection
+
+Massive session. J now has a real training loop end-to-end and remembers everything.
+
+### Training pipeline (Phase A + B — Modal + R2 wired end-to-end)
+- `training/storage.py` — R2 client with local-disk fallback
+- `training/exporter.py` — SFT + DPO Mongo → JSONL → R2
+- `training/modal_client.py` — dispatch/cancel via Modal SDK 1.5.2
+- `training/train.py` — Modal container: pulls Qwen 2.5 Coder 7B, LoRA rank 16, uploads adapter to R2. Includes `smoke_test` for free plumbing checks.
+- `routes/training_webhooks.py` — HMAC-signed callback receiver (loss history, log lines, completion)
+- Wired `POST /api/training/runs` to `dispatch()` — real GPU training triggerable from bolt UI
+- **First real run**: `r_4bd8c3` — 92 SFT samples, loss 3.62→2.26 in 105s, adapter safetensors in `s3://j-training-artifacts/adapters/r_4bd8c3/` (38.53 MB). Cost ~$0.50.
+- Auto-registers completed runs into `training_models` — bolt Models page populated, Promote button active
+
+### Chat persistence + verbatim recall
+- `AICoworker.jsx` now saves messages + conversation_id + agent_mode to localStorage per-project. Refresh no longer nukes the thread.
+- New tool `recall_chat(query, k, since_days)` — J searches her own message history via MongoDB text index, scoped to `ctx.user_id`, returns matches + ±1 turn context. Text index auto-created on first invocation. Tested against 706 real messages across 3 user_ids.
+
+### Owner introspection unlock
+- `_OWNER_INTROSPECTION_CLAUSE` in `core/guardrails.py` swaps in for `SUBSTRATE_SECRECY_CLAUSE` on owner sessions. J can now describe her capabilities, tools, and internals to the operator — while still masking raw secret values and staying locked down for public users.
+- `owner_system_prompt(prompt)` helper. Wired into 4 callsites: chat, agent-loop, refine, agent-final-summary. Non-owner requests unchanged.
+
+### Cross-env chronicle backfill
+- `GET  /api/admin/chronicle_export?kind=&since=` — JSONL stream
+- `POST /api/admin/chronicle_import` — idempotent bulk upsert by `id`
+- Preview → prod backfill executed: 102 ai_answer rows migrated
+- Fixed pre-existing schema bug in `/training/stats` — was querying `body.verdict:"pass"` when data is top-level `verdict:"passed"`. Preview now correctly shows 92 verified answers.
+
+### Ollama / Oracle bootstrap
+- `/app/docs/oracle-ollama-bootstrap.sh` — one-shot setup for Ampere A1 (24 GB ARM). Downloads base + adapter, merges LoRA, converts q4_k_m GGUF, imports into Ollama, exposes on 0.0.0.0:11434 with 24h keep-alive. Optionally installs Cloudflare Tunnel.
+- Uploaded to R2 with 7-day signed URL for one-liner install on the VM
+
+### Verification
+- Real training run completed with LoRA adapter in R2 ✓
+- Bolt Runs list shows all 6 runs; Run Detail no longer crashes ✓
+- Bolt Models page shows `j-qwen2.5-coder-lora-v1` ✓
+- Owner sessions bypass substrate secrecy in preview (needs redeploy for prod) ✓
+- Chat persists across refresh on preview ✓
+- recall_chat tool returns real matches with context ✓
+
+### Prod redeploy needed to ship
+This session's changes live in preview only. Prod redeploy will pick up:
+- Training pipeline (exporter, dispatch, webhooks, models auto-register)
+- Owner introspection unlock
+- Chat persistence
+- recall_chat tool
+- stats bug fix (verified_answers will jump from 0 → ~92 on prod after Chronicle backfill has already landed)
+
+
