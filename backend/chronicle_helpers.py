@@ -42,8 +42,15 @@ async def chronicle_session_start(
 async def chronicle_narrative(
     user_id: str, project_id: str, session_id: str,
     user_first_msg: str, tool_summary: list[str], final_summary: str,
+    timeout_seconds: float = 45.0,
 ) -> Optional[str]:
-    """Call J to write a narrative paragraph; append it as a `session_end` entry."""
+    """Call J to write a narrative paragraph; append it as a `session_end` entry.
+
+    Wrapped in an asyncio timeout so a slow LLM chain can't stall the caller
+    long enough to trigger a Cloudflare 520. On timeout or LLM failure we
+    fall back to a stub narrative — the session still closes cleanly.
+    """
+    import asyncio
     timeline = "\n".join(f"- {t}" for t in tool_summary[:30]) or "- (no tool activity)"
     prompt_text = (
         f"USER ASKED: {user_first_msg[:400]}\n\n"
@@ -52,11 +59,17 @@ async def chronicle_narrative(
         "Write the chronicle entry now."
     )
     try:
-        reply, _meta = await chain_call(
-            user_id=user_id, task="chat",
-            system=CHRONICLE_PROMPT, user_text=prompt_text,
-            session_id=f"chronicle-{session_id}", max_passes=1,
+        reply, _meta = await asyncio.wait_for(
+            chain_call(
+                user_id=user_id, task="chat",
+                system=CHRONICLE_PROMPT, user_text=prompt_text,
+                session_id=f"chronicle-{session_id}", max_passes=1,
+            ),
+            timeout=timeout_seconds,
         )
+    except asyncio.TimeoutError:
+        log.warning(f"chronicle narrative timed out after {timeout_seconds}s — using stub")
+        reply = f"(narrative unavailable — LLM chain exceeded {int(timeout_seconds)}s)\nTAGS: session, offline"
     except Exception as e:
         log.warning(f"chronicle narrative LLM call failed: {e}")
         return None

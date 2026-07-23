@@ -129,9 +129,11 @@ async function _sseStream(url, body, { onHeartbeat, onDone, onError }) {
     body: JSON.stringify(body || {}),
   });
   if (!resp.ok) {
-    // Non-2xx (e.g. rate limit before stream started). Parse JSON error.
+    // Non-2xx (e.g. rate limit before stream started). Read once, then try JSON.
+    // Never do resp.json() + resp.text() — the body stream can only be read once.
+    const raw = await resp.text();
     let detail;
-    try { detail = (await resp.json()).detail; } catch { detail = await resp.text(); }
+    try { detail = JSON.parse(raw).detail; } catch { detail = raw; }
     const err = new Error(`HTTP ${resp.status}`);
     err.response = { status: resp.status, data: { detail } };
     throw err;

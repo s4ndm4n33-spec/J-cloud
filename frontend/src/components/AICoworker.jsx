@@ -242,6 +242,7 @@ function ChatTab({
         });
         if (streamErr) throw streamErr;
         const r = finalResult;
+        if (!r) throw new Error("stream closed without a final result — Cloudflare edge or upstream cut the connection");
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
         onAICall?.();
@@ -264,6 +265,7 @@ function ChatTab({
         });
         if (streamErr) throw streamErr;
         const r = finalResult;
+        if (!r) throw new Error("stream closed without a final result — Cloudflare edge or upstream cut the connection");
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
         onAICall?.();
