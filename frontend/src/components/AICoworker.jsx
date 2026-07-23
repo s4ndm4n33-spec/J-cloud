@@ -30,12 +30,45 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
   const [tab, setTab] = useState("chat");
 
   // Chat state lifted from ChatTab so tab switches don't wipe the conversation.
-  // Only `END SESSION` (in ChatTab) clears it.
-  const [chatMessages, setChatMessages] = useState([
-    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
-  ]);
-  const [chatConversationId, setChatConversationId] = useState(null);
-  const [chatAgentMode, setChatAgentMode] = useState(true);
+  // Also persisted to localStorage per-project so a full page refresh preserves
+  // the thread — clearing only happens on explicit END SESSION in ChatTab.
+  const chatStorageKey = `j.chat.${project?.project_id || "_"}`;
+  const [chatMessages, setChatMessages] = useState(() => {
+    try {
+      const raw = localStorage.getItem(chatStorageKey + ".messages");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch { /* corrupt payload — fall through to default */ }
+    return [{ role: "system", content: "J is online. Five Masters loaded. What needs building?" }];
+  });
+  const [chatConversationId, setChatConversationId] = useState(
+    () => localStorage.getItem(chatStorageKey + ".conversationId") || null
+  );
+  const [chatAgentMode, setChatAgentMode] = useState(
+    () => (localStorage.getItem(chatStorageKey + ".agentMode") ?? "1") === "1"
+  );
+
+  // Persist across refreshes. Trim message history so localStorage doesn't
+  // balloon — the SERVER has full history; localStorage is just a cache of
+  // the last few dozen turns for instant restore.
+  useEffect(() => {
+    try {
+      const trimmed = chatMessages.slice(-80);
+      localStorage.setItem(chatStorageKey + ".messages", JSON.stringify(trimmed));
+    } catch { /* quota exceeded or private mode — ignore */ }
+  }, [chatMessages, chatStorageKey]);
+  useEffect(() => {
+    if (chatConversationId) {
+      localStorage.setItem(chatStorageKey + ".conversationId", chatConversationId);
+    } else {
+      localStorage.removeItem(chatStorageKey + ".conversationId");
+    }
+  }, [chatConversationId, chatStorageKey]);
+  useEffect(() => {
+    localStorage.setItem(chatStorageKey + ".agentMode", chatAgentMode ? "1" : "0");
+  }, [chatAgentMode, chatStorageKey]);
 
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">
