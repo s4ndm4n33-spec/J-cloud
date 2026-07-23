@@ -80,6 +80,8 @@ TOOL_SPEC: list[dict[str, Any]] = [
      "args": {"query": "string", "max_results": "int (default 5, max 10)"}},
     {"name": "recall_knowledge", "desc": "Semantically search J's Mind — the global knowledge store. Returns the top-K facts J has learned from prior searches or accepted user proposals. Use BEFORE running a fresh web_search if the question is on ground you may have already covered.",
      "args": {"query": "string", "k": "int (default 5)", "category": "optional category filter"}},
+    {"name": "recall_chat", "desc": "Search verbatim across ALL past chat threads with this user. Returns matching messages with 1-turn context on each side. Use when the user says 'like we talked about', 'what did I ask before', 'the config I gave you yesterday', 'that snippet from earlier' — anything that points to prior conversation. Scoped to the current user; you never see other users' chats.",
+     "args": {"query": "string (keywords or phrases)", "k": "int (default 5, max 20)", "since_days": "optional int (default 90)"}},
     {"name": "propose_learning", "desc": "Save a durable insight from THIS conversation into J's Mind. Unlike web_search (which auto-learns from web results), this is opt-in: the user reviews it in the MIND panel and accepts / edits / rejects. Use it for things a future J should remember — user preferences, project-specific quirks, hard-won lessons.",
      "args": {"title": "string (max 200)", "body": "string (1-3 sentence fact, max 6000)", "category": "one of the known categories", "tags": "list of strings"}},
     # Control
@@ -620,6 +622,74 @@ async def _tool_recall_knowledge(ctx: ToolContext, query: str, k: int = 5,
     }
 
 
+async def _tool_recall_chat(ctx: ToolContext, query: str, k: int = 5,
+                            since_days: int = 90) -> dict:
+    """Search J's own memory of past chats with this user. Uses MongoDB text
+    index on messages.content, scoped to ctx.user_id, ordered by relevance.
+    Returns each hit with the immediately-neighbouring turn on each side so
+    J can reconstruct context, not just an isolated line."""
+    from datetime import datetime, timedelta, timezone
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "message store not wired into this ctx"}
+    if not (query or "").strip():
+        return {"error": "query required"}
+    k = max(1, min(int(k), 20))
+    since = (datetime.now(timezone.utc) - timedelta(days=int(since_days))).isoformat()
+
+    # Ensure the text index exists (idempotent — no-op after first call).
+    try:
+        await db_ref.messages.create_index([("content", "text")], name="msg_text")
+    except Exception:  # noqa: BLE001
+        pass  # index may already exist with different weights — that's fine
+
+    q = {
+        "$text": {"$search": query},
+        "user_id": ctx.user_id,
+        "ts": {"$gte": since},
+    }
+    projection = {
+        "_id": 0, "role": 1, "content": 1, "ts": 1, "conversation_id": 1,
+        "score": {"$meta": "textScore"},
+    }
+
+    try:
+        docs = await db_ref.messages.find(q, projection).sort(
+            [("score", {"$meta": "textScore"})]
+        ).limit(k).to_list(k)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"text search failed (index may still be building): {e}"[:200]}
+
+    hits: list[dict] = []
+    for d in docs:
+        # Grab the neighbouring turns (same conversation, ordered by ts).
+        neighbours = await db_ref.messages.find(
+            {"conversation_id": d["conversation_id"],
+             "user_id": ctx.user_id},
+            {"_id": 0, "role": 1, "content": 1, "ts": 1},
+        ).sort("ts", 1).to_list(500)
+        # Find the anchor index and take ±1.
+        idx = next((i for i, m in enumerate(neighbours) if m["ts"] == d["ts"]
+                    and m["content"] == d["content"]), None)
+        context = []
+        if idx is not None:
+            lo, hi = max(0, idx - 1), min(len(neighbours), idx + 2)
+            context = [
+                {"role": m["role"], "content": m["content"][:600], "ts": m["ts"]}
+                for m in neighbours[lo:hi]
+            ]
+        hits.append({
+            "conversation_id": d["conversation_id"],
+            "ts": d["ts"],
+            "role": d["role"],
+            "score": round(d.get("score", 0.0), 3),
+            "content": d["content"][:600],
+            "context": context,
+        })
+
+    return {"query": query, "since": since, "hit_count": len(hits), "hits": hits}
+
+
 async def _tool_propose_learning(
     ctx: ToolContext,
     title: str,
@@ -760,6 +830,7 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "web_fetch": _tool_web_fetch,
     "web_search": _tool_web_search,
     "recall_knowledge": _tool_recall_knowledge,
+    "recall_chat": _tool_recall_chat,
     "propose_learning": _tool_propose_learning,
     "ask_user": _tool_ask_user,
     "propose_chronicle_entry": _tool_propose_chronicle_entry,
