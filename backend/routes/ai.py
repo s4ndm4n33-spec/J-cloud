@@ -16,7 +16,7 @@ from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVI
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
-from core.guardrails import redact_substrate_leaks, log_flag as log_abuse_flag
+from core.guardrails import redact_substrate_leaks, owner_system_prompt, log_flag as log_abuse_flag
 from core.keyvault import decrypt_key
 from core.migration_log import log_tool_event
 from core import knowledge as km
@@ -167,8 +167,10 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
         "ts": datetime.now(timezone.utc).isoformat(),
     })
 
+    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    chat_system = owner_system_prompt(CHAT_PROMPT) if is_owner else CHAT_PROMPT
     reply, meta = await chain_call(
-        user["user_id"], "chat", CHAT_PROMPT, user_text,
+        user["user_id"], "chat", chat_system, user_text,
         f"{user['user_id']}-{conversation_id}",
     )
     if not meta["success"]:
@@ -183,6 +185,10 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
             "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
             f"// last attempts: {len(meta['attempts'])}"
         )
+    elif is_owner:
+        # Owner sees the raw LLM output — no post-hoc redaction. J is trusted
+        # to introspect when the OWNER_INTROSPECTION_CLAUSE is in the prompt.
+        pass
     else:
         # Substrate secrecy filter — only apply to actual LLM output, never
         # to synthetic status messages we generated ourselves.
@@ -342,14 +348,18 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     refined = _strip_code_fences(reply)
     # Substrate secrecy filter on refined code output too — J shouldn't be
     # coerced into leaking internals via a "refine this file" attack.
-    original_refined = refined
-    refined, leak_hits = redact_substrate_leaks(refined)
-    if leak_hits:
-        log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
-        meta["substrate_redacted"] = True
-        await log_abuse_flag(db, user["user_id"], "substrate_leak",
-                             matched=";".join(leak_hits[:5]),
-                             snippet=original_refined, route="/ai/refine")
+    # Owner bypass: the operator can refine any of their own internals.
+    if OWNER_USER_ID and user["user_id"] == OWNER_USER_ID:
+        leak_hits = []
+    else:
+        original_refined = refined
+        refined, leak_hits = redact_substrate_leaks(refined)
+        if leak_hits:
+            log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
+            meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(leak_hits[:5]),
+                                 snippet=original_refined, route="/ai/refine")
     ast_report = fm_evaluate(refined, language).to_dict()
     danger = destructive_scan(refined)
     return {
@@ -522,10 +532,13 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
     no_tool_streak = 0
     NO_TOOL_STREAK_MAX = 2 if auto_mode else 1
 
+    is_owner = _is_owner  # computed at line 512 above from OWNER_USER_ID
+    agent_system = owner_system_prompt(AGENT_PROMPT) if is_owner else AGENT_PROMPT
+
     for step_idx in range(max_steps):
         user_text = "\n\n".join(transcript_for_llm) + "\n\n[J]\n"
         reply, meta = await chain_call(
-            user["user_id"], "chat", AGENT_PROMPT, user_text,
+            user["user_id"], "chat", agent_system, user_text,
             f"{user['user_id']}-agent-{conversation_id}-{step_idx}",
         )
         if not meta["success"]:
@@ -546,11 +559,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         calls = parse_tool_calls(reply)
         # Substrate secrecy filter on the prose the user actually sees. Tool
         # calls are unaffected (they're structured invocations, not disclosure).
-        original_prose = prose
-        prose, prose_leaks = redact_substrate_leaks(prose)
-        if prose_leaks:
-            log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
-            meta["substrate_redacted"] = True
+        # Skip the filter entirely for the OWNER — they can see everything.
+        if is_owner:
+            prose_leaks: list[str] = []
+        else:
+            original_prose = prose
+            prose, prose_leaks = redact_substrate_leaks(prose)
+            if prose_leaks:
+                log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
+                meta["substrate_redacted"] = True
             await log_abuse_flag(db, user["user_id"], "substrate_leak",
                                  matched=";".join(prose_leaks[:5]),
                                  snippet=original_prose, route=f"/ai/agent#step{step_idx}")
@@ -719,13 +736,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         final_summary = "// Stopped at max_steps. Send another message to continue."
 
     # Final substrate-secrecy pass on the summary the user reads at the end.
-    original_final = final_summary
-    final_summary, _sfl = redact_substrate_leaks(final_summary)
-    if _sfl:
-        log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
-        await log_abuse_flag(db, user["user_id"], "substrate_leak",
-                             matched=";".join(_sfl[:5]),
-                             snippet=original_final, route="/ai/agent#final")
+    # Skip for OWNER — is_owner set at top of agent loop.
+    if not is_owner:
+        original_final = final_summary
+        final_summary, _sfl = redact_substrate_leaks(final_summary)
+        if _sfl:
+            log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(_sfl[:5]),
+                                 snippet=original_final, route="/ai/agent#final")
 
     await db.messages.insert_one({
         "conversation_id": conversation_id, "user_id": user["user_id"],
