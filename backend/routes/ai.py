@@ -180,10 +180,25 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
                 "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
                 "attempts": meta.get("attempts", []),
             })
+        # Build a per-step diagnostic so the user can see exactly which of
+        # THEIR providers failed and why — instead of a vague "chain exhausted".
+        attempts = meta.get("attempts", []) or []
+        step_lines: list[str] = []
+        for a in attempts[:8]:
+            src = a.get("source", "?")
+            prov = a.get("provider", "?")
+            err = (a.get("error") or a.get("reason") or "unknown")[:100]
+            step_lines.append(f"//   {src:9s} {prov:10s} — {err}")
+
+        if is_owner:
+            hint = "// Add balance to your Universal Key, or verify BYOK provider status."
+        else:
+            hint = ("// Every BYOK provider failed. Common causes: expired key, quota hit, "
+                    "or wrong region. Update your keys in Settings (gear icon).")
         reply = (
-            "// J:OFFLINE — entire LLM failover chain exhausted.\n"
-            "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
-            f"// last attempts: {len(meta['attempts'])}"
+            f"// J:OFFLINE — all {len(attempts)} chain steps failed.\n"
+            f"{chr(10).join(step_lines) if step_lines else '//   (no attempt telemetry)'}\n"
+            f"{hint}"
         )
     elif is_owner:
         # Owner sees the raw LLM output — no post-hoc redaction. J is trusted
