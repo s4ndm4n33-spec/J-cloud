@@ -36,7 +36,6 @@ image = (
         "httpx>=0.27",
     )
 )
-
 app = modal.App("j-training", image=image)
 hf_volume = modal.Volume.from_name("hf-cache", create_if_missing=True)
 
@@ -122,8 +121,8 @@ def train(run_id: str,
         _post({"run_id": run_id, "status": "running", "step": 0,
                "message": f"Pulling {hf_id}"})
 
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        from peft import LoraConfig, get_peft_model
+        from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         from datasets import load_dataset
         import torch
 
@@ -131,8 +130,26 @@ def train(run_id: str,
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
+        # QLoRA — 4-bit NF4 quantized load. Cuts a 7B bf16 model from ~14 GB
+        # down to ~4 GB VRAM. Absolutely required to make DPO (which keeps a
+        # reference model in memory too) fit on a single A100-40GB.
+        bnb_cfg = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
         model = AutoModelForCausalLM.from_pretrained(
-            hf_id, torch_dtype=torch.bfloat16, device_map="auto")
+            hf_id,
+            quantization_config=bnb_cfg,
+            device_map="auto",
+        )
+        model = prepare_model_for_kbit_training(model)
+        model.gradient_checkpointing_enable()
+        # Required with grad checkpointing to keep grads flowing through
+        # the k-bit-frozen base to the LoRA adapters.
+        model.enable_input_require_grads()
+
         peft_cfg = LoraConfig(
             r=lora_rank, lora_alpha=lora_rank * 2, lora_dropout=0.05,
             bias="none", task_type="CAUSAL_LM",
@@ -162,6 +179,7 @@ def train(run_id: str,
                 per_device_train_batch_size=batch_size,
                 learning_rate=learning_rate, logging_steps=5,
                 save_strategy="no", report_to="none", bf16=True,
+                gradient_checkpointing=True,
             )
             trainer = SFTTrainer(model=model, args=cfg, train_dataset=ds,
                                  tokenizer=tokenizer, callbacks=[WebhookCB()])
@@ -172,6 +190,11 @@ def train(run_id: str,
                 per_device_train_batch_size=batch_size,
                 learning_rate=learning_rate, logging_steps=5,
                 save_strategy="no", report_to="none", bf16=True, beta=0.1,
+                gradient_checkpointing=True,
+                # Precompute reference log-probs on the base model, then drop
+                # it. Without this, DPOTrainer keeps BOTH the policy and the
+                # reference model in VRAM simultaneously (2× memory).
+                precompute_ref_log_probs=True,
             )
             trainer = DPOTrainer(model=model, args=cfg, train_dataset=ds,
                                  tokenizer=tokenizer, callbacks=[WebhookCB()])
