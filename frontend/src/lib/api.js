@@ -456,3 +456,25 @@ export async function knowledgeRecall(query, { k = 5, category } = {}) {
 export async function getKnowledgeCategories() {
   return (await client.get("/knowledge/categories")).data;
 }
+
+// ----- User reports (bug / error / question / feedback / suggestion) -----
+export async function submitReport(payload) {
+  return (await client.post("/reports", payload)).data;
+}
+export async function listReports({ status, kind, limit = 50 } = {}) {
+  return (await client.get("/reports", { params: { status, kind, limit } })).data
+    // eslint-disable-next-line no-return-await
+    ?? (await client.get("/admin/reports", { params: { status, kind, limit } })).data;
+}
+export async function adminListReports({ status, kind, limit = 50 } = {}) {
+  return (await client.get("/admin/reports", { params: { status, kind, limit } })).data;
+}
+export async function adminMarkReportRead(id) {
+  return (await client.post(`/admin/reports/${id}/read`)).data;
+}
+export async function adminMarkReportResolved(id, note = "") {
+  return (await client.post(`/admin/reports/${id}/resolve`, { note })).data;
+}
+export async function adminTelemetry({ failed_only = true, days = 1, limit = 50 } = {}) {
+  return (await client.get("/admin/telemetry", { params: { failed_only, days, limit } })).data;
+}

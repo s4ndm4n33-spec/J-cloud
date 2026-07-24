@@ -6,6 +6,8 @@ import ChroniclePanel from "@/components/ChroniclePanel";
 import KnowledgePanel from "@/components/KnowledgePanel";
 import VoiceMode from "@/components/VoiceMode";
 import { BYOKInlineCard } from "@/components/BYOKInlineCard";
+import ReportDialog from "@/components/ReportDialog";
+import { MessageSquareWarning } from "lucide-react";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
@@ -157,6 +159,9 @@ function ChatTab({
   // can render "// J is thinking · 24s" while long agent turns run.
   const [pulseCount, setPulseCount] = useState(0);
 
+  // Report dialog — user-triggered bug/question/feedback flow.
+  const [reportOpen, setReportOpen] = useState(false);
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
@@ -297,6 +302,7 @@ function ChatTab({
 
   return (
     <div className="flex flex-col h-full">
+      <ReportDialog open={reportOpen} onClose={() => setReportOpen(false)} />
       <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-3 space-y-3" data-testid="chat-messages">
         {messages.map((m, i) => (
           <ChatMessage
@@ -377,13 +383,21 @@ function ChatTab({
           />
         )}
         <button
+          data-testid="open-report-dialog"
+          onClick={() => setReportOpen(true)}
+          title="Report a bug, ask a question, send feedback — pings the owner"
+          className="ml-auto mr-1 p-1 text-slate-400 hover:text-cyan-300 transition"
+        >
+          <MessageSquareWarning size={13} />
+        </button>
+        <button
           data-testid="end-session-button"
           onClick={endSession}
           disabled={ending || busy || !hasUserActivity}
           title={hasUserActivity
             ? "Close this conversation — J writes a chronicle narrative + (if opted in) emails you the transcript."
             : "Send at least one message before closing a session."}
-          className="ml-auto font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
         >
           {ending ? "CLOSING…" : "END SESSION"}
         </button>
