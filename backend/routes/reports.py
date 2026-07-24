@@ -54,14 +54,18 @@ async def submit_report(payload: dict, user: dict = Depends(get_current_user)):
     if not body:
         raise HTTPException(status_code=400, detail="body required")
 
-    # Rate limit — cheap counter query.
-    hour_ago = (datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)).isoformat()
-    recent = await db.user_reports.count_documents(
-        {"user_id": user["user_id"], "ts": {"$gte": hour_ago}}
-    )
-    if recent >= 5:
-        raise HTTPException(status_code=429,
-                            detail="report rate limit — 5/hour. try again later.")
+    # Rate limit — only for opinion reports (feedback/suggestion/question).
+    # Bug and error reports bypass the limit: if someone's hitting a lot of
+    # errors we want to hear about ALL of them, not silence them after 5.
+    if kind not in ("bug", "error"):
+        hour_ago = (datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)).isoformat()
+        recent = await db.user_reports.count_documents(
+            {"user_id": user["user_id"], "ts": {"$gte": hour_ago},
+             "kind": {"$in": ["feedback", "suggestion", "question"]}}
+        )
+        if recent >= 5:
+            raise HTTPException(status_code=429,
+                                detail="feedback rate limit — 5/hour on opinion reports. bug/error reports are unlimited.")
 
     report_id = f"rep_{uuid.uuid4().hex[:10]}"
     doc: dict = {

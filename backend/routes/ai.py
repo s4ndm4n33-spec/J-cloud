@@ -34,9 +34,12 @@ from chronicle_helpers import chronicle_narrative, chronicle_session_start
 router = APIRouter()
 
 # Rate limits (owner is exempt — see core/ratelimit.set_owner_id).
-# Chat/refine: 12 req/min. Agent: 6 req/min (heavier turns, more tool calls).
-_CHAT_CAP, _CHAT_REFILL = 12, 12 / 60.0
-_AGENT_CAP, _AGENT_REFILL = 6, 6 / 60.0
+# These caps guard OUR infra (disk, git, tool calls, Modal) — NOT LLM credits.
+# Non-owner users pay their own token costs via BYOK, so the caps are set
+# high enough that a real pair-programming flow won't hit them; low enough
+# that a burst-abuse client (mashed enter, rogue script) still gets 429'd.
+_CHAT_CAP, _CHAT_REFILL = 60, 60 / 60.0
+_AGENT_CAP, _AGENT_REFILL = 30, 30 / 60.0
 
 
 def _build_context_block(payload: dict) -> str:
