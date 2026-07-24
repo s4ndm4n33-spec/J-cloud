@@ -719,7 +719,22 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
                 "content": json.dumps({"args": call.get("args", {}), "result": result})[:6000],
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
-            transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{json.dumps(result)[:1500]}")
+            # Serialize the tool result into the LLM transcript. Failures get
+            # a distinct, high-salience header ([TOOL FAILED]) so the LLM
+            # can't skim past them — J needs to recognize when a call didn't
+            # do what she asked and either retry or change approach.
+            _r_str = json.dumps(result)[:1500]
+            if isinstance(result, dict) and result.get("error"):
+                transcript_for_llm.append(
+                    f"[TOOL FAILED — {call['name']}]\n"
+                    f"ERROR: {str(result.get('error'))[:400]}\n"
+                    f"raw result: {_r_str}\n"
+                    "// This tool call did NOT succeed. Do not pretend it did. "
+                    "Retry with corrected args, try a different tool, or tell "
+                    "the user you cannot complete the request."
+                )
+            else:
+                transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{_r_str}")
 
             if result.get("_done"):
                 # Verification gate: J cannot claim done if he touched code
@@ -735,7 +750,12 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
                     # rejection (both for J's next-turn context and audit).
                     steps[-1]["result"] = result
                     transcript_for_llm[-1] = (
-                        f"[TOOL RESULT — done]\n" + json.dumps(result)[:1500]
+                        f"[TOOL FAILED — done]\n"
+                        f"ERROR: {verify_err[:400]}\n"
+                        f"raw result: {json.dumps(result)[:1500]}\n"
+                        "// You attempted `done` but the verification gate rejected it. "
+                        "You must run a test / typecheck / lint against the code you "
+                        "touched THIS SESSION before attempting `done` again."
                     )
                     continue
                 is_done = True
