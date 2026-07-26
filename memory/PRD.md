@@ -19,6 +19,13 @@
 - **Destructive interlock** (`core/destructive.py`): regex bank for 18+ destructive patterns (`rm -rf /`, fork bombs, `mkfs`, `dd if=...of=/dev/`, raw `DROP DATABASE`, `git push --force main`, `shutil.rmtree`, etc.). Critical matches HARD-BLOCK terminal exec with HTTP 423 until a consume-once override token is obtained via password.
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
+## Fixed (2026-02-XX) — Voice Chat / SSE stream error hole
+- **Root cause**: `_stream_task_with_heartbeats` in `routes/ai.py` only caught `HTTPException`. Any other exception raised by the LLM chain (SDK error, provider outage, `RuntimeError`) escaped the async generator silently — the SSE connection stayed open with no `done` or `error` frame, and the client hung until Cloudflare cut at ~100s. Presented in prod as "audio transcribes but no response returns" for voice, and generic "stream closed" errors for text.
+- **Backend fix**: catch generic `Exception` in the heartbeat wrapper → always emit `event: error` with `{status: 500, detail: {message, code: stream_task_failed}}`. `asyncio.CancelledError` now cleanly cancels the upstream task. Added `finally` that cancels the task if it's still running (prevents leaked tasks on client disconnect).
+- **Frontend fix (VoiceMode)**: parent (`AICoworker.jsx`) now wraps `voiceReply` as `{text, key}` with `key = Date.now()`; VoiceMode keys its `useEffect` on `speakingText?.key`. Identical or repeat replies now still trigger playback → mic loop no longer stalls. Also: if `send()` returns null (LLM error), fallback line "no response — check your keys, or say that again" is spoken so the mic resumes recording.
+- **Regression test**: `/app/backend/tests/test_stream_error_frame.py` — 3 tests covering generic exception, HTTPException, and success paths of the heartbeat wrapper. All passing.
+
+
 ## Implemented (2026-05-23)
 - **LLM Failover Chain** — Universal Key always runs first as primary. If it fails (budget, rate-limit, model down), J automatically cascades through the user's BYO keys: same provider first, then cross-provider, until one succeeds. Per-task chains:
   - **Chat**: Universal/gemini-3-flash → BYO gemini-3-flash → BYO openai gpt-5.4-mini → BYO anthropic claude-haiku-4.5

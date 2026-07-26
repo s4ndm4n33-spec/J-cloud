@@ -299,9 +299,27 @@ async def _stream_task_with_heartbeats(
                     "detail": e.detail,
                 })
                 return
-    except asyncio.CancelledError:  # noqa: BLE001
-        task.cancel()
-        raise
+            except asyncio.CancelledError:
+                # Client disconnected mid-stream. Cancel the upstream task,
+                # then re-raise so FastAPI can shut the response cleanly.
+                task.cancel()
+                raise
+            except Exception as e:  # noqa: BLE001
+                # ANY other failure (LLM SDK error, provider outage, timeout,
+                # rate-limit not wrapped as HTTPException, etc.) MUST be
+                # surfaced as an SSE error frame — otherwise the generator
+                # dies silently and the client hangs until the ingress cuts
+                # at ~100s, which is exactly what was happening in prod.
+                log.exception("chat_stream_task_failed")
+                yield _sse_frame("error", {
+                    "status": 500,
+                    "detail": {"message": f"{type(e).__name__}: {e}",
+                               "code": "stream_task_failed"},
+                })
+                return
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 def _stream_response(gen: AsyncIterator[str]) -> StreamingResponse:

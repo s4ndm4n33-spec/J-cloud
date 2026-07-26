@@ -228,11 +228,13 @@ export default function VoiceMode({ enabled, onEnable, onTranscript, speakingTex
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled]);
 
-  // When the parent hands us new text to speak (J's reply), speak it
+  // When the parent hands us new text to speak (J's reply), speak it.
+  // `speakingText` is `{text, key}` — key changes on every set so identical
+  // replies still trigger playback and unstick the loop.
   useEffect(() => {
-    if (enabled && speakingText) speak(speakingText);
+    if (enabled && speakingText?.text) speak(speakingText.text);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [speakingText]);
+  }, [speakingText?.key]);
 
   const label = {
     idle: "VOICE · OFF",

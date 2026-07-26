@@ -154,7 +154,7 @@ function ChatTab({
 
   // Hands-free voice loop state
   const [voiceOn, setVoiceOn] = useState(false);
-  const [voiceReply, setVoiceReply] = useState(null); // text J should speak next
+  const [voiceReply, setVoiceReply] = useState(null); // {text, key} — key changes every set so useEffect refires even when text repeats
   // Heartbeat pulse count — increments on every SSE heartbeat frame so we
   // can render "// J is thinking · 24s" while long agent turns run.
   const [pulseCount, setPulseCount] = useState(0);
@@ -377,8 +377,16 @@ function ChatTab({
             onEnable={setVoiceOn}
             speakingText={voiceReply}
             onTranscript={async (text) => {
-              const reply = await send(text);
-              if (reply) setVoiceReply(reply);
+              // Fire the same streaming chat path text uses. If it fails
+              // (or returns nothing), still nudge VoiceMode to resume
+              // listening by emitting a fallback line — otherwise the mic
+              // gets stuck in "processing" and the loop stalls.
+              let reply = null;
+              try { reply = await send(text); } catch { /* send() already handled the toast */ }
+              const spoken = reply && reply.trim()
+                ? reply
+                : "// no response — check your keys, or say that again";
+              setVoiceReply({ text: spoken, key: Date.now() });
             }}
           />
         )}
