@@ -141,11 +141,15 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
     project_id = payload.get("project_id")
     ctx = _build_context_block(payload)
 
-    # J:MIND — pull top-K remembered facts relevant to this message and
-    # prepend them so plain chat gets sharper with every session too.
+    # J:MIND — pull top-K remembered facts relevant to this message,
+    # scoped to this user's own facts + owner-curated shared baseline.
     mind_block = ""
     try:
-        mind_hits = await km.recall(db, message, k=5)
+        _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+        mind_hits = await km.recall(
+            db, message,
+            user_id=user["user_id"], is_owner=_is_owner, k=5,
+        )
         mind_block = km.format_recall_for_prompt(mind_hits)
     except Exception as e:
         log.warning(f"mind recall (chat) failed: {e}")
@@ -546,11 +550,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
     _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
     ctx.tavily_key = TAVILY_API_KEY if _is_owner else ""
 
-    # --- J:MIND recall — inject top-K globally learned facts relevant to
-    # the user's current message into her system context. This is the
-    # "learn from web + accepted proposals" payoff loop.
+    # --- J:MIND recall — inject top-K facts scoped to this user (own facts
+    # UNION owner-curated shared baseline). Fixes the "collaborative
+    # workspace" leak where one user's Tavily auto-learn was surfacing in
+    # another user's agent context.
     try:
-        mind_hits = await km.recall(db, message, k=5)
+        mind_hits = await km.recall(
+            db, message,
+            user_id=user["user_id"], is_owner=_is_owner, k=5,
+        )
         mind_block = km.format_recall_for_prompt(mind_hits)
         if mind_block:
             transcript_for_llm.append(mind_block)

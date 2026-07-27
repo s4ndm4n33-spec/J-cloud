@@ -1,30 +1,31 @@
-"""J's Mind — a global, persistent knowledge store with semantic recall.
+"""J's Mind — a per-user persistent knowledge store with semantic recall.
 
 Two tiers, one goal:
 
     Tier 1 — `knowledge_facts` (MongoDB, keyword+tag searchable, embedded).
-             The durable memory. J writes here; every user reads.
+             The durable memory. Every fact carries a `user_id` and a
+             `shared` flag: non-owner users see their own facts UNION the
+             owner-curated `shared=True` baseline. Owner sees everything.
     Tier 2 — `knowledge_proposals` (MongoDB, pending-approval queue).
              Insights J *thinks* are worth remembering but haven't been
-             confirmed by a human yet.
+             confirmed by a human yet. Also `user_id`-scoped.
 
 Auto-learn: after every `web_search`, J summarises the top hits into a
-handful of durable facts (via LLM) and stores them WITHOUT approval — a URL
-source and category tag give us provenance. This is the "learn from web"
-loop the user asked for.
+handful of durable facts (via LLM). These are stored scoped to the caller;
+owner-triggered searches can promote learned facts to the shared baseline
+by passing `shared=True`. Non-owner learning is always private.
 
 Opt-in: `propose_learning(insight)` creates a proposal instead of writing
 straight to the fact table. The user gets a MIND panel to ACCEPT / EDIT /
-REJECT. This is the "learn from conversation" loop.
+REJECT.
 
-Retrieval: `recall(query, k)` uses fastembed cosine similarity for semantic
-recall, falling back to Mongo text search when embeddings aren't available.
-Injected into the agent's system context per turn so J's answers get sharper
-as the store grows.
+Retrieval: `recall(query, user_id=..., is_owner=..., k=...)` uses fastembed
+cosine similarity for semantic recall, falling back to Mongo text search
+when embeddings aren't available. Injected into the agent's system context
+per turn so J's answers get sharper as *the caller's own* store grows.
 
-Scope: global (per user's explicit choice). One typo doesn't ruin the store
-because facts carry source URLs; the frontend surfaces them and users can
-delete anything questionable.
+Scope: per-user (fixed 2026-02 — was global, which leaked context across
+users once the app went multi-tenant).
 """
 from __future__ import annotations
 
@@ -140,12 +141,50 @@ async def _ensure_indexes(db) -> None:
     await db.knowledge_facts.create_index([("source_url", 1)])
     await db.knowledge_facts.create_index([("ts", -1)])
     await db.knowledge_facts.create_index([("title", "text"), ("body", "text")])
+    # Per-user scoping (added 2026-02) — every fact is owned by exactly one
+    # user; `shared=True` promotes it to J's public baseline visible to all.
+    # Compound index makes the recall filter (user_id OR shared) O(log n).
+    await db.knowledge_facts.create_index([("user_id", 1)])
+    await db.knowledge_facts.create_index([("shared", 1)])
+    await db.knowledge_facts.create_index([("user_id", 1), ("category", 1)])
     await db.knowledge_proposals.create_index([("id", 1)], unique=True)
     await db.knowledge_proposals.create_index([("status", 1), ("ts", -1)])
+    await db.knowledge_proposals.create_index([("user_id", 1), ("status", 1)])
     await db.knowledge_search_log.create_index([("ts", -1)])
     # DPO candidates: rejected Tavily results kept for preference-pair training.
     await db.knowledge_dpo_candidates.create_index([("ts", -1)])
     await db.knowledge_dpo_candidates.create_index([("chosen_fact_id", 1)])
+
+
+async def migrate_legacy_facts(db, owner_user_id: str) -> dict[str, int]:
+    """One-shot idempotent migration for facts predating per-user scoping.
+    All rows without `user_id` are marked as owner-owned + shared — this
+    treats the legacy pool as J's public baseline. Safe to re-run.
+    """
+    if not owner_user_id:
+        return {"migrated": 0, "reason": "no OWNER_USER_ID configured"}
+    r = await db.knowledge_facts.update_many(
+        {"user_id": {"$exists": False}},
+        {"$set": {"user_id": owner_user_id, "shared": True}},
+    )
+    # Same for proposals — legacy proposals become owner-owned.
+    p = await db.knowledge_proposals.update_many(
+        {"user_id": {"$in": [None, ""]}},
+        {"$set": {"user_id": owner_user_id}},
+    )
+    return {"migrated_facts": r.modified_count,
+            "migrated_proposals": p.modified_count}
+
+
+def _scope_filter(user_id: str, is_owner: bool) -> dict[str, Any]:
+    """Return the Mongo query fragment that scopes reads to a caller.
+
+    - Owner sees everything (empty filter).
+    - Non-owner sees their own facts OR facts explicitly marked `shared=True`.
+    """
+    if is_owner:
+        return {}
+    return {"$or": [{"user_id": user_id}, {"shared": True}]}
 
 
 # ---------- Freshness / time-decay -----------------------------------------
@@ -186,6 +225,7 @@ def _freshness_score(ts_last_seen_iso: str) -> float:
 async def add_fact(
     db,
     *,
+    user_id: str,
     title: str,
     body: str,
     category: str = "general",
@@ -193,9 +233,16 @@ async def add_fact(
     source_url: str = "",
     source_query: str = "",
     signer: str = "J",
+    shared: bool = False,
     embed_now: bool = True,
 ) -> dict[str, Any]:
-    """Insert or upsert a fact. De-dup on (source_url, title) if source_url set."""
+    """Insert or upsert a fact scoped to `user_id`. `shared=True` promotes it
+    to J's public baseline (visible to all users). De-dup key is
+    (user_id, source_url, title) — same URL from two users = two rows, so
+    contexts stay separated.
+    """
+    if not user_id:
+        return {"error": "user_id required"}
     title = (title or "").strip()[:200]
     body = (body or "").strip()[:6000]
     if not title or not body:
@@ -203,10 +250,11 @@ async def add_fact(
     category = (category or "general").strip().lower() or "general"
     tags_clean = [str(t).lower().strip()[:32] for t in (tags or []) if str(t).strip()][:8]
 
-    # De-dup: if a fact from the same URL+title already exists, bump ref_count.
+    # De-dup: same user + URL + title = bump ref_count instead of inserting.
     if source_url:
         prior = await db.knowledge_facts.find_one(
-            {"source_url": source_url, "title": title}, {"_id": 0}
+            {"user_id": user_id, "source_url": source_url, "title": title},
+            {"_id": 0},
         )
         if prior:
             await db.knowledge_facts.update_one(
@@ -219,6 +267,8 @@ async def add_fact(
     fact_id = f"fact_{uuid.uuid4().hex[:12]}"
     doc = {
         "id": fact_id,
+        "user_id": user_id,
+        "shared": bool(shared),
         "title": title,
         "body": body,
         "category": category,
@@ -245,12 +295,14 @@ async def add_fact(
 async def list_facts(
     db,
     *,
+    user_id: str,
+    is_owner: bool = False,
     category: Optional[str] = None,
     tag: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = dict(_scope_filter(user_id, is_owner))
     if category:
         query["category"] = category
     if tag:
@@ -262,9 +314,35 @@ async def list_facts(
     return docs
 
 
-async def delete_fact(db, fact_id: str) -> dict[str, Any]:
-    r = await db.knowledge_facts.delete_one({"id": fact_id})
+async def delete_fact(
+    db, fact_id: str, *, user_id: str, is_owner: bool = False,
+) -> dict[str, Any]:
+    """Delete a fact. Non-owners can only delete their OWN facts (not shared
+    baseline ones from the owner). Owner can delete anything.
+    """
+    if is_owner:
+        r = await db.knowledge_facts.delete_one({"id": fact_id})
+    else:
+        r = await db.knowledge_facts.delete_one(
+            {"id": fact_id, "user_id": user_id},
+        )
     return {"ok": r.deleted_count == 1}
+
+
+async def share_fact(
+    db, fact_id: str, *, is_owner: bool, shared: bool = True,
+) -> dict[str, Any]:
+    """Owner-only: promote/demote a fact's `shared` flag. Non-owners cannot
+    make their own facts visible to other users.
+    """
+    if not is_owner:
+        return {"error": "only the owner can share facts"}
+    r = await db.knowledge_facts.update_one(
+        {"id": fact_id}, {"$set": {"shared": bool(shared)}},
+    )
+    if r.matched_count == 0:
+        return {"error": "fact not found"}
+    return {"ok": True, "id": fact_id, "shared": bool(shared)}
 
 
 # ---------- Semantic recall ---------------------------------------------------
@@ -274,10 +352,15 @@ async def recall(
     db,
     query: str,
     *,
+    user_id: str,
+    is_owner: bool = False,
     k: int = 5,
     category: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """Return top-K facts most relevant to `query`.
+    """Return top-K facts most relevant to `query`, scoped to caller.
+
+    Non-owner recall = the user's own facts UNION shared baseline facts.
+    Owner recall = everything (per the owner-lock convention).
 
     Path A (embeddings available): cosine similarity over stored vectors.
     Path B (fallback): Mongo `$text` search — no embeddings needed.
@@ -286,6 +369,9 @@ async def recall(
     if not q:
         return []
     base_filter: dict[str, Any] = {"embedding": {"$ne": None}}
+    scope = _scope_filter(user_id, is_owner)
+    if scope:
+        base_filter.update(scope)
     if category:
         base_filter["category"] = category
 
@@ -326,6 +412,9 @@ async def recall(
 
     # Path B — text search fallback (works even without an embedder loaded).
     text_query: dict[str, Any] = {"$text": {"$search": q}}
+    scope_b = _scope_filter(user_id, is_owner)
+    if scope_b:
+        text_query.update(scope_b)
     if category:
         text_query["category"] = category
     docs = await db.knowledge_facts.find(
@@ -368,24 +457,36 @@ async def add_proposal(
     return doc
 
 
-async def list_proposals(db, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:
-    docs = await db.knowledge_proposals.find(
-        {"status": status}, {"_id": 0}
-    ).sort("ts", -1).to_list(int(limit))
+async def list_proposals(
+    db, *, user_id: str, is_owner: bool = False,
+    status: str = "pending", limit: int = 100,
+) -> list[dict[str, Any]]:
+    q: dict[str, Any] = {"status": status}
+    if not is_owner:
+        q["user_id"] = user_id
+    docs = await db.knowledge_proposals.find(q, {"_id": 0}) \
+        .sort("ts", -1).to_list(int(limit))
     return docs
 
 
 async def resolve_proposal(
     db, prop_id: str, action: str,
+    *,
+    caller_user_id: str,
+    is_owner: bool = False,
     edits: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     prop = await db.knowledge_proposals.find_one({"id": prop_id}, {"_id": 0})
     if not prop:
         return {"error": "not found"}
+    # Ownership check — non-owners can only resolve their own proposals.
+    if not is_owner and prop.get("user_id") != caller_user_id:
+        return {"error": "forbidden"}
     edits = edits or {}
     if action == "accept":
         await add_fact(
             db,
+            user_id=prop.get("user_id") or caller_user_id,
             title=edits.get("title") or prop["title"],
             body=edits.get("body") or prop["body"],
             category=edits.get("category") or prop["category"],
@@ -393,6 +494,7 @@ async def resolve_proposal(
             source_url=edits.get("source_url", ""),
             source_query=prop.get("source", ""),
             signer="J+user",
+            shared=False,  # user-taught facts stay private by default
         )
         await db.knowledge_proposals.update_one(
             {"id": prop_id}, {"$set": {"status": "accepted"}},
@@ -460,14 +562,23 @@ async def auto_learn_from_search(
     db,
     search_result: dict[str, Any],
     *,
+    user_id: str,
+    shared: bool = False,
     llm_extract: "callable[str, str] | None" = None,
 ) -> dict[str, Any]:
-    """Turn a Tavily search into 1..N durable facts.
+    """Turn a Tavily search into 1..N durable facts scoped to `user_id`.
+
+    Owner-triggered searches can pass `shared=True` to promote learned facts
+    into J's public baseline. Non-owner searches always keep learned facts
+    private (`shared=False`) so one user's browsing never surfaces for
+    another user.
 
     If an `llm_extract(prompt) -> str` callable is supplied, we ask the LLM to
     distill the results into deduped, self-contained fact snippets. Otherwise
     we fall back to a deterministic 1-fact-per-result summariser.
     """
+    if not user_id:
+        return {"learned": 0, "error": "user_id required"}
     query = search_result.get("query", "")
     results = search_result.get("results") or []
     if not results:
@@ -497,6 +608,8 @@ async def auto_learn_from_search(
                 for f in data.get("facts", [])[:5]:
                     r = await add_fact(
                         db,
+                        user_id=user_id,
+                        shared=shared,
                         title=f.get("title") or "",
                         body=f.get("body") or "",
                         category=category,
@@ -558,6 +671,8 @@ async def auto_learn_from_search(
             body_trim = body_trim[: cut + 1]
         add = await add_fact(
             db,
+            user_id=user_id,
+            shared=shared,
             title=title or query,
             body=body_trim,
             category=category,

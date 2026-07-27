@@ -82,6 +82,18 @@ async def _startup():
         await db.ambient_events.create_index("event_key")
     except Exception as e:
         log.warning(f"ambient_events indexes setup failed: {e}")
+    # J:MIND — ensure per-user scoping indexes exist and migrate legacy
+    # (pre-scoping) facts into the owner's shared baseline. Idempotent.
+    try:
+        from core import knowledge as km
+        await km._ensure_indexes(db)
+        owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+        if owner_id:
+            r = await km.migrate_legacy_facts(db, owner_id)
+            if r.get("migrated_facts") or r.get("migrated_proposals"):
+                log.info(f"j:mind migration: {r}")
+    except Exception as e:
+        log.warning(f"j:mind scoping migration failed: {e}")
     # Boot the ambient-awareness detector
     ambient.start()
 

@@ -590,7 +590,13 @@ async def _tool_web_search(ctx: ToolContext, query: str, max_results: int = 5) -
     result = await km.web_search(db_ref, api_key, query, max_results=max_results)
     if result.get("error"):
         return result
-    learn = await km.auto_learn_from_search(db_ref, result)
+    # Per-user scoping — auto-learned facts stay private to the caller. Owner
+    # searches can seed the shared baseline; everyone else's stays private.
+    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    is_owner = bool(owner_id) and ctx.user_id == owner_id
+    learn = await km.auto_learn_from_search(
+        db_ref, result, user_id=ctx.user_id, shared=is_owner,
+    )
     # Return a slimmer payload to J — she doesn't need every field.
     return {
         "query": result["query"],
@@ -607,10 +613,17 @@ async def _tool_web_search(ctx: ToolContext, query: str, max_results: int = 5) -
 async def _tool_recall_knowledge(ctx: ToolContext, query: str, k: int = 5,
                                  category: str | None = None) -> dict:
     from . import knowledge as km
+    import os as _os
     db_ref = getattr(ctx, "db", None)
     if db_ref is None:
         return {"error": "knowledge store not wired into this ctx"}
-    hits = await km.recall(db_ref, query, k=int(k), category=category)
+    owner_id = _os.environ.get("OWNER_USER_ID", "").strip()
+    is_owner = bool(owner_id) and ctx.user_id == owner_id
+    hits = await km.recall(
+        db_ref, query,
+        user_id=ctx.user_id, is_owner=is_owner,
+        k=int(k), category=category,
+    )
     return {
         "query": query,
         "hits": [
