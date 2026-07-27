@@ -19,6 +19,35 @@
 - **Destructive interlock** (`core/destructive.py`): regex bank for 18+ destructive patterns (`rm -rf /`, fork bombs, `mkfs`, `dd if=...of=/dev/`, raw `DROP DATABASE`, `git push --force main`, `shutil.rmtree`, etc.). Critical matches HARD-BLOCK terminal exec with HTTP 423 until a consume-once override token is obtained via password.
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
+## Fixed & Shipped (2026-02-XX) — Multi-tenant compartmentalization
+
+### J:MIND per-user scoping (leak sealed)
+- **Root cause**: `knowledge_facts` was global. User A's facts (and Tavily auto-learns) surfaced in user B's `km.recall` → LLM prompts → "collaborative workspace" symptom + amplified rate-limit / timeout failures under multi-tenant load.
+- **Fix**: added `user_id` + `shared: bool` to every fact. `recall`/`list_facts`/`delete_fact`/`add_fact`/`auto_learn_from_search`/`resolve_proposal` all take `user_id` + `is_owner`. Non-owner sees own + `shared=True`. Owner sees everything.
+- **Migration**: 103 legacy pre-scoping facts converted to `owner+shared` on startup (idempotent).
+- **New**: `POST /api/knowledge/facts/{id}/share` (owner-only) to promote/demote a fact.
+- **Tests**: `tests/test_knowledge_scoping.py` — 10 tests locking down every leak path.
+
+### Global-Fact Proposals (user → owner review)
+- `add_proposal` gained `propose_shared: bool`; J's `propose_learning` tool exposes it.
+- `GET /api/knowledge/proposals?shared_only=true` — owner review inbox.
+- `resolve_proposal`: owner accept of a `propose_shared=True` proposal → fact stored with `shared=True`. Non-owner accepts stay private (guardrail).
+- Frontend: `KnowledgePanel` PROPOSALS tab gains ALL / GLOBAL·REVIEW filter + globe badge on shared-intent proposals.
+
+### Workspace R2 Sync (hybrid persistence)
+- **Problem**: `/app/workspaces/` is NOT on a persistent volume — every redeploy wipes user code.
+- **Fix**: `core/workspace_sync.py` — snapshot project as gzipped tar → Cloudflare R2 at `workspaces/{user_id}/{project_id}/latest.tar.gz`. Hash-dedup so unchanged trees don't re-upload.
+- **Hybrid triggers** (per user choice):
+  - Auto every 5 min via background loop over projects with `last_activity` in the last 15 min
+  - Auto on chat session end (`POST /api/projects/{id}/chronicle/close-session` now returns `snapshot: {...}`)
+  - Manual `POST /api/projects/{id}/snapshot` (SAVE button in TopBar)
+- **Auto-restore**: `GET /api/projects/{id}/tree` first checks disk; if missing but `last_r2_key` set, pulls from R2 before the fallback seeder.
+- **Manual restore**: `POST /api/projects/{id}/restore` — wipes disk + re-hydrates. Frontend fires a `gauntlet:workspace-restored` window event so IDE refetches tree + drops open tabs.
+- **History**: `GET /api/projects/{id}/snapshots` returns snapshot list + latest metadata.
+- **Frontend**: TopBar now shows FloppyDisk (SAVE) + ArrowClockwise (RESTORE) buttons + "saved Xm ago" indicator.
+- **Verified**: E2E on preview — created project → wrote file → snapshot → `rm -rf` workspace dir → hit tree endpoint → auto-restored, `hello.txt` content intact.
+
+
 ## Fixed (2026-02-XX) — Voice Chat / SSE stream error hole
 - **Root cause**: `_stream_task_with_heartbeats` in `routes/ai.py` only caught `HTTPException`. Any other exception raised by the LLM chain (SDK error, provider outage, `RuntimeError`) escaped the async generator silently — the SSE connection stayed open with no `done` or `error` frame, and the client hung until Cloudflare cut at ~100s. Presented in prod as "audio transcribes but no response returns" for voice, and generic "stream closed" errors for text.
 - **Backend fix**: catch generic `Exception` in the heartbeat wrapper → always emit `event: error` with `{status: 500, detail: {message, code: stream_task_failed}}`. `asyncio.CancelledError` now cleanly cancels the upstream task. Added `finally` that cancels the task if it's still running (prevents leaked tasks on client disconnect).

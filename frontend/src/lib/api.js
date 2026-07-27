@@ -71,6 +71,18 @@ export async function deleteProject(project_id) {
   return (await client.delete(`/projects/${project_id}`)).data;
 }
 
+// ----- Workspace persistence (hybrid R2 auto+manual snapshot) -----
+export async function snapshotProject(project_id) {
+  return (await client.post(`/projects/${project_id}/snapshot`, {})).data;
+}
+export async function restoreProject(project_id) {
+  return (await client.post(`/projects/${project_id}/restore`, {})).data;
+}
+export async function listSnapshots(project_id, limit = 20) {
+  return (await client.get(`/projects/${project_id}/snapshots`,
+    { params: { limit } })).data;
+}
+
 export async function evaluateGauntlet(code, language) {
   return (await client.post("/gauntlet/evaluate", { code, language })).data;
 }
@@ -441,8 +453,9 @@ export async function getKnowledgeFacts({ category, tag, q, limit = 50 } = {}) {
 export async function deleteKnowledgeFact(id) {
   return (await client.delete(`/knowledge/facts/${id}`)).data;
 }
-export async function getKnowledgeProposals(status = "pending") {
-  return (await client.get("/knowledge/proposals", { params: { status } })).data;
+export async function getKnowledgeProposals(status = "pending", { sharedOnly = false } = {}) {
+  return (await client.get("/knowledge/proposals",
+    { params: { status, shared_only: sharedOnly } })).data;
 }
 export async function resolveKnowledgeProposal(id, action, edits) {
   return (await client.post(`/knowledge/proposals/${id}/${action}`, edits ? { edits } : {})).data;

@@ -82,8 +82,8 @@ TOOL_SPEC: list[dict[str, Any]] = [
      "args": {"query": "string", "k": "int (default 5)", "category": "optional category filter"}},
     {"name": "recall_chat", "desc": "Search verbatim across ALL past chat threads with this user. Returns matching messages with 1-turn context on each side. Use when the user says 'like we talked about', 'what did I ask before', 'the config I gave you yesterday', 'that snippet from earlier' — anything that points to prior conversation. Scoped to the current user; you never see other users' chats.",
      "args": {"query": "string (keywords or phrases)", "k": "int (default 5, max 20)", "since_days": "optional int (default 90)"}},
-    {"name": "propose_learning", "desc": "Save a durable insight from THIS conversation into J's Mind. Unlike web_search (which auto-learns from web results), this is opt-in: the user reviews it in the MIND panel and accepts / edits / rejects. Use it for things a future J should remember — user preferences, project-specific quirks, hard-won lessons.",
-     "args": {"title": "string (max 200)", "body": "string (1-3 sentence fact, max 6000)", "category": "one of the known categories", "tags": "list of strings"}},
+    {"name": "propose_learning", "desc": "Save a durable insight from THIS conversation into J's Mind. Unlike web_search (which auto-learns from web results), this is opt-in: the user reviews it in the MIND panel and accepts / edits / rejects. Use it for things a future J should remember — user preferences, project-specific quirks, hard-won lessons. Set `propose_shared=true` ONLY when the user explicitly asks to share the fact with all users (e.g. 'add this to J's public knowledge', 'everyone should know this'); the owner reviews and decides whether to promote it into the shared baseline.",
+     "args": {"title": "string (max 200)", "body": "string (1-3 sentence fact, max 6000)", "category": "one of the known categories", "tags": "list of strings", "propose_shared": "bool (default false) — user is asking J to make this a public/shared fact"}},
     # Control
     {"name": "ask_user", "desc": "Pause and ask the user a question. Use BEFORE bulk mutations (>5 files) or any irreversible action.",
      "args": {"question": "string"}},
@@ -709,6 +709,7 @@ async def _tool_propose_learning(
     body: str = "",
     category: str = "general",
     tags: list | None = None,
+    propose_shared: bool = False,
 ) -> dict:
     """J proposes a durable insight — user reviews in the MIND panel."""
     from . import knowledge as km
@@ -725,8 +726,11 @@ async def _tool_propose_learning(
         category=category, tags=tags or [],
         source="conversation",
         user_id=getattr(ctx, "user_id", ""),
+        propose_shared=bool(propose_shared),
     )
-    return {"ok": True, "proposal_id": prop["id"], "status": prop["status"]}
+    return {"ok": True, "proposal_id": prop["id"],
+            "status": prop["status"],
+            "propose_shared": prop.get("propose_shared", False)}
 
 
 async def _tool_ask_user(ctx: ToolContext, question: str) -> dict:

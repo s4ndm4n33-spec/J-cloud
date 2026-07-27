@@ -94,6 +94,19 @@ async def _startup():
                 log.info(f"j:mind migration: {r}")
     except Exception as e:
         log.warning(f"j:mind scoping migration failed: {e}")
+    # Workspace persistence — index the projects.last_activity field for the
+    # periodic sync loop, then start the loop. If R2 isn't configured the
+    # loop is a no-op (see workspace_sync.SyncLoop.start).
+    try:
+        await db.projects.create_index([("last_activity", -1)])
+        await db.project_snapshots.create_index(
+            [("project_id", 1), ("ts", -1)]
+        )
+        from core import workspace_sync as wsync
+        from deps import project_path as _pp
+        wsync.sync_loop.start(db, _pp, interval_sec=300)
+    except Exception as e:
+        log.warning(f"workspace-sync bootstrap failed: {e}")
     # Boot the ambient-awareness detector
     ambient.start()
 
@@ -101,4 +114,9 @@ async def _startup():
 @app.on_event("shutdown")
 async def _shutdown():
     ambient.stop()
+    try:
+        from core import workspace_sync as wsync
+        wsync.sync_loop.stop()
+    except Exception:
+        pass
     client.close()

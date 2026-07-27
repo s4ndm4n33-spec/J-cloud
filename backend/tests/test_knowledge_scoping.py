@@ -168,3 +168,55 @@ async def test_auto_learn_scopes_to_user(db):
     for d in docs:
         assert d["user_id"] == USER_B, f"leaked user_id: {d.get('user_id')}"
         assert d["shared"] is False, "auto-learn should not auto-share"
+
+
+@pytest.mark.asyncio
+async def test_propose_shared_owner_promotes_to_shared(db):
+    """User B proposes a shared fact; owner accepts → fact is shared → user A sees it."""
+    prop = await km.add_proposal(
+        db, title="Public torque spec",
+        body="A universally useful torque value everyone should know.",
+        category="mechanical", user_id=USER_B,
+        propose_shared=True,
+    )
+    r = await km.resolve_proposal(
+        db, prop["id"], "accept",
+        caller_user_id=OWNER, is_owner=True,
+    )
+    assert r.get("ok") and r.get("shared") is True
+
+    # User A must now see it via recall
+    hits = await km.recall(db, "torque spec",
+                           user_id=USER_A, is_owner=False, k=5)
+    assert any("Public torque spec" == h["title"] for h in hits), (
+        f"owner-accepted shared proposal not visible to user A: {hits}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_propose_shared_non_owner_accept_stays_private(db):
+    """If a non-owner accepts their OWN propose_shared proposal, the resulting
+    fact must stay private — only the owner can promote to shared baseline.
+    This prevents users from self-approving public knowledge.
+    """
+    # User B proposes with propose_shared=True
+    prop = await km.add_proposal(
+        db, title="Would-be public",
+        body="User B thinks this should be public.",
+        category="general", user_id=USER_B,
+        propose_shared=True,
+    )
+    # User B accepts their own proposal (non-owner)
+    r = await km.resolve_proposal(
+        db, prop["id"], "accept",
+        caller_user_id=USER_B, is_owner=False,
+    )
+    assert r.get("ok") and r.get("shared") is False, (
+        "non-owner accept must NOT promote propose_shared to shared"
+    )
+    # User A must NOT see it
+    hits = await km.recall(db, "public",
+                           user_id=USER_A, is_owner=False, k=5)
+    assert not any("Would-be public" == h["title"] for h in hits), (
+        "non-owner self-accepted propose_shared leaked to another user"
+    )

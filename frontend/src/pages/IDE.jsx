@@ -88,19 +88,37 @@ export default function IDE() {
 
   // Load tree when project changes (auto-open README only once per project)
   const autoOpenedFor = useRef(null);
+  const refreshTree = useCallback(async () => {
+    if (!activeProject) return;
+    const r = await projectTree(activeProject.project_id);
+    setTree(r.tree);
+    return r.tree;
+  }, [activeProject]);
   useEffect(() => {
     if (!activeProject) return;
     (async () => {
-      const r = await projectTree(activeProject.project_id);
-      setTree(r.tree);
-      if (autoOpenedFor.current !== activeProject.project_id) {
+      const t = await refreshTree();
+      if (t && autoOpenedFor.current !== activeProject.project_id) {
         autoOpenedFor.current = activeProject.project_id;
-        const readme = r.tree.find((f) => f.type === "file" && f.name.toLowerCase() === "readme.md");
+        const readme = t.find((f) => f.type === "file" && f.name.toLowerCase() === "readme.md");
         if (readme) openFile(readme.path);
       }
     })();
     // eslint-disable-next-line
   }, [activeProject]);
+
+  // Refetch tree + drop all open tabs after a workspace restore (files on
+  // disk have been replaced — any open buffer would silently overwrite the
+  // restored state on next save).
+  useEffect(() => {
+    function onRestored(e) {
+      if (e?.detail?.project_id !== activeProject?.project_id) return;
+      setTabs([]); setActiveTab(null);
+      refreshTree();
+    }
+    window.addEventListener("gauntlet:workspace-restored", onRestored);
+    return () => window.removeEventListener("gauntlet:workspace-restored", onRestored);
+  }, [activeProject?.project_id, refreshTree]);
 
   const openFile = useCallback(async (path) => {
     if (!activeProject) return;
@@ -139,12 +157,6 @@ export default function IDE() {
     await writeFile(activeProject.project_id, tab.path, tab.content);
     setTabs((prev) => prev.map((t) => (t.path === tab.path ? { ...t, dirty: false } : t)));
   }, [tabs, activeTab, activeProject]);
-
-  const refreshTree = useCallback(async () => {
-    if (!activeProject) return;
-    const r = await projectTree(activeProject.project_id);
-    setTree(r.tree);
-  }, [activeProject]);
 
   const setActiveTabScore = (score, issues) => {
     setTabs((prev) => prev.map((t) => (t.path === activeTab ? { ...t, score } : t)));

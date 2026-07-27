@@ -89,6 +89,42 @@ def presign_get(key: str, expires: int = 3600) -> str:
     )
 
 
+def get_bytes(key: str) -> Optional[bytes]:
+    """Download an object by key. Returns None if the object is missing.
+    Raises for any other error so callers can distinguish 404 from failure.
+    """
+    if r2_configured():
+        from botocore.exceptions import ClientError
+        try:
+            obj = _r2_client().get_object(Bucket=R2_BUCKET, Key=key)
+            return obj["Body"].read()
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                return None
+            raise
+    # Local fallback — mirror the key-mangling from put_bytes
+    path = LOCAL_ROOT / key.replace("/", "_")
+    if not path.exists():
+        return None
+    return path.read_bytes()
+
+
+def delete_key(key: str) -> bool:
+    """Delete an object by key. Returns True if it existed."""
+    if r2_configured():
+        try:
+            _r2_client().delete_object(Bucket=R2_BUCKET, Key=key)
+            return True
+        except Exception:
+            return False
+    path = LOCAL_ROOT / key.replace("/", "_")
+    if path.exists():
+        path.unlink()
+        return True
+    return False
+
+
 def local_path(filename: str) -> Path:
     """Resolve a local-stored artifact by its stored filename."""
     return LOCAL_ROOT / filename

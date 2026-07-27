@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
-import { Brain, MagnifyingGlass, Check, X, Trash, Sparkle, LinkSimple } from "@phosphor-icons/react";
+import { Brain, MagnifyingGlass, Check, X, Trash, Sparkle, LinkSimple, Globe } from "@phosphor-icons/react";
 import {
   getKnowledgeStats, getKnowledgeFacts, deleteKnowledgeFact,
   getKnowledgeProposals, resolveKnowledgeProposal,
@@ -163,15 +163,18 @@ function FactsList({ categories, onChange }) {
 
 function ProposalsList({ onResolved }) {
   const [items, setItems] = useState([]);
+  const [isOwner, setIsOwner] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [sharedOnly, setSharedOnly] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await getKnowledgeProposals("pending");
+      const r = await getKnowledgeProposals("pending", { sharedOnly });
       setItems(r.proposals || []);
+      setIsOwner(!!r.is_owner);
     } finally { setLoading(false); }
-  }, []);
+  }, [sharedOnly]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -183,15 +186,56 @@ function ProposalsList({ onResolved }) {
 
   return (
     <div className="h-full overflow-y-auto p-2 space-y-2">
+      {/* Filter row — always visible; the global toggle only makes sense to
+          the owner, but non-owners can also flip it to see their own pending
+          global-share requests. */}
+      <div className="flex items-center gap-2 pb-2 border-b border-cyan/10">
+        <button
+          data-testid="mind-filter-all"
+          onClick={() => setSharedOnly(false)}
+          className={`px-2 py-0.5 font-mono text-[0.55rem] tracking-widest border transition
+            ${!sharedOnly ? "bg-cyan/10 border-cyan/50 text-cyan" : "border-cyan/20 text-alloy hover:text-cyan"}`}
+        >ALL</button>
+        <button
+          data-testid="mind-filter-global"
+          onClick={() => setSharedOnly(true)}
+          className={`px-2 py-0.5 font-mono text-[0.55rem] tracking-widest border transition inline-flex items-center gap-1
+            ${sharedOnly ? "bg-amber/10 border-amber/60 text-amber" : "border-amber/20 text-alloy hover:text-amber"}`}
+          title={isOwner
+            ? "Owner review inbox — proposals asking to enter J's shared baseline"
+            : "Your pending requests to share facts globally"}
+        >
+          <Globe size={9} /> GLOBAL{isOwner ? " · REVIEW" : ""}
+        </button>
+      </div>
+
       {loading && <div className="text-alloy font-mono text-xs">loading...</div>}
       {!loading && items.length === 0 && (
         <div className="text-alloy font-mono text-xs px-1 py-3 text-center">
-          no pending proposals. J proposes when she learns something durable from you.
+          {sharedOnly
+            ? (isOwner ? "no global-share requests pending review."
+                        : "no global-share requests from you yet.")
+            : "no pending proposals. J proposes when she learns something durable from you."}
         </div>
       )}
       {items.map((p) => (
-        <div key={p.id} className="border border-amber/30 bg-amber/5 p-2" data-testid={`mind-proposal-${p.id}`}>
-          <div className="font-display text-[0.7rem] text-gridwhite tracking-wide">{p.title}</div>
+        <div
+          key={p.id}
+          className={`border p-2 ${p.propose_shared ? "border-amber/60 bg-amber/10" : "border-amber/30 bg-amber/5"}`}
+          data-testid={`mind-proposal-${p.id}`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <div className="font-display text-[0.7rem] text-gridwhite tracking-wide">{p.title}</div>
+            {p.propose_shared && (
+              <span
+                data-testid={`mind-proposal-global-badge-${p.id}`}
+                className="font-mono text-[0.55rem] text-amber bg-amber/15 border border-amber/40 px-1.5 py-0.5 inline-flex items-center gap-1 tracking-widest"
+                title="This proposal asks to enter J's shared baseline — owner review required."
+              >
+                <Globe size={9} /> GLOBAL
+              </span>
+            )}
+          </div>
           <div className="font-mono text-[0.65rem] text-alloy mt-1 leading-relaxed">{p.body}</div>
           <div className="flex items-center justify-between mt-2">
             <div className="flex items-center gap-2">
@@ -204,6 +248,11 @@ function ProposalsList({ onResolved }) {
               <button
                 data-testid={`mind-accept-${p.id}`}
                 onClick={() => act(p.id, "accept")}
+                title={p.propose_shared && isOwner
+                  ? "Accept and promote to shared baseline (all users will see it)"
+                  : p.propose_shared && !isOwner
+                    ? "Accept as PRIVATE — only the owner can promote to shared"
+                    : "Accept — adds to your private J:MIND"}
                 className="px-2 py-0.5 border border-cyan/40 text-cyan text-[0.55rem] font-display tracking-widest hover:bg-cyan/10 flex items-center gap-1"
               >
                 <Check size={10} /> ACCEPT

@@ -137,14 +137,21 @@ async def knowledge_share_fact(
 @router.get("/knowledge/proposals")
 async def knowledge_proposals(
     status: str = "pending", limit: int = 100,
+    shared_only: bool = False,
     user: dict = Depends(get_current_user),
 ):
+    """List proposals. Non-owner sees their own. Owner sees all.
+    Pass `shared_only=true` to filter for `propose_shared=True` proposals
+    (the owner review inbox for global-fact requests).
+    """
     docs = await km.list_proposals(
         db,
         user_id=user["user_id"], is_owner=_is_owner(user),
         status=status, limit=limit,
     )
-    return {"proposals": docs, "count": len(docs)}
+    if shared_only:
+        docs = [p for p in docs if p.get("propose_shared")]
+    return {"proposals": docs, "count": len(docs), "is_owner": _is_owner(user)}
 
 
 @router.post("/knowledge/proposals/{prop_id}/{action}")

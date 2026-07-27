@@ -13,6 +13,7 @@ from deps import (
     user_root, detect_language, log,
 )
 from core import chronicle as chron
+from core import workspace_sync as wsync
 
 router = APIRouter()
 
@@ -48,7 +49,39 @@ async def create_project(payload: dict, user: dict = Depends(get_current_user)):
 
 @router.get("/projects/{project_id}/tree")
 async def project_tree(project_id: str, user: dict = Depends(get_current_user)):
+    """List a project's file tree.
+
+    Auto-restore: if the disk dir is missing (post-redeploy on non-persistent
+    volume) but a snapshot exists in R2, pull it down BEFORE the fallback
+    seeder wipes state with an empty scaffold. This is the lazy half of the
+    hybrid persistence policy.
+    """
     from pathlib import Path
+    # Load the project row first so we know if this user actually owns it
+    # and whether a snapshot exists to restore from.
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]},
+        {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from deps import user_root as _uroot
+    disk = _uroot(user["user_id"]) / project_id
+    if not disk.exists() and proj.get("last_r2_key"):
+        try:
+            r = await wsync.restore_project(
+                db, user_id=user["user_id"], project_id=project_id,
+                dest_dir=disk,
+            )
+            if r.get("ok"):
+                log.info(
+                    f"workspace-sync: auto-restored {project_id} "
+                    f"({r.get('files')} files, {r.get('bytes')} bytes)"
+                )
+        except Exception as e:
+            log.warning(f"auto-restore failed for {project_id}: {e}")
+
     base = project_path(user["user_id"], project_id)
 
     def walk(d: Path) -> list[dict]:
@@ -90,6 +123,11 @@ async def write_file(project_id: str, payload: dict, user: dict = Depends(get_cu
     target = safe_join(base, path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    # Mark this project as active so the periodic sync loop picks it up.
+    try:
+        await wsync.touch_activity(db, user_id=user["user_id"], project_id=project_id)
+    except Exception:  # noqa: BLE001
+        pass  # never let a metadata bump break a file save
     return {"ok": True, "path": path, "bytes": len(content)}
 
 
@@ -177,3 +215,83 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     except Exception:
         pass
     return {"ok": True, "deleted": project_id}
+
+
+# ---------------------------------------------------------------------------
+# Workspace persistence — hybrid auto+manual sync to Cloudflare R2.
+# See `core/workspace_sync.py` for the tar/gzip serialisation and the
+# every-5-min background loop registered in server.py.
+# ---------------------------------------------------------------------------
+
+@router.post("/projects/{project_id}/snapshot")
+async def snapshot_workspace(project_id: str, user: dict = Depends(get_current_user)):
+    """Manual save — tar+gzip the workspace and upload to R2. Returns
+    {ok, hash, bytes, ts, unchanged}. `unchanged=True` means we detected
+    no diff from the previous snapshot and skipped the upload (idempotent
+    press of the SAVE button)."""
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    base = project_path(user["user_id"], project_id)
+    r = await wsync.snapshot_project(
+        db, user_id=user["user_id"], project_id=project_id,
+        src_dir=base, force=True,
+    )
+    if not r.get("ok"):
+        raise HTTPException(status_code=500, detail=r.get("error") or "snapshot failed")
+    return r
+
+
+@router.post("/projects/{project_id}/restore")
+async def restore_workspace(project_id: str, user: dict = Depends(get_current_user)):
+    """Manual rollback — wipe the on-disk workspace and re-hydrate from the
+    latest R2 snapshot. Destructive; users should be prompted client-side."""
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not proj.get("last_r2_key"):
+        raise HTTPException(status_code=404, detail="No snapshot exists to restore from")
+    disk = user_root(user["user_id"]) / project_id
+    # Nuke existing state so extraction lands cleanly.
+    if disk.exists():
+        try:
+            shutil.rmtree(disk)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"could not clear workspace: {e}") from e
+    r = await wsync.restore_project(
+        db, user_id=user["user_id"], project_id=project_id, dest_dir=disk,
+    )
+    if not r.get("ok"):
+        raise HTTPException(status_code=500, detail="restore failed")
+    return r
+
+
+@router.get("/projects/{project_id}/snapshots")
+async def list_snapshots(
+    project_id: str, limit: int = 20,
+    user: dict = Depends(get_current_user),
+):
+    """Snapshot history (most recent first). Handy for a UI browser later —
+    for now it powers the small 'last saved 3m ago' label in the header."""
+    proj = await db.projects.find_one(
+        {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
+    )
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+    docs = await db.project_snapshots.find(
+        {"project_id": project_id, "user_id": user["user_id"]},
+        {"_id": 0},
+    ).sort("ts", -1).to_list(int(limit))
+    return {
+        "snapshots": docs,
+        "count": len(docs),
+        "latest": {
+            "hash": proj.get("last_snapshot_hash"),
+            "ts": proj.get("last_snapshot_ts"),
+            "bytes": proj.get("last_snapshot_bytes"),
+        },
+    }

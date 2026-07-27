@@ -438,6 +438,7 @@ async def add_proposal(
     source: str = "",
     conversation_id: str = "",
     user_id: str = "",
+    propose_shared: bool = False,
 ) -> dict[str, Any]:
     prop_id = f"prop_{uuid.uuid4().hex[:12]}"
     doc = {
@@ -449,6 +450,10 @@ async def add_proposal(
         "source": source[:200],
         "conversation_id": conversation_id,
         "user_id": user_id,
+        # `propose_shared` = the user (or J on their behalf) is asking for
+        # this to enter J's public baseline. Owner reviews in a dedicated
+        # inbox; on accept, the fact is written with shared=True.
+        "propose_shared": bool(propose_shared),
         "status": "pending",  # pending | accepted | rejected
         "ts": datetime.now(timezone.utc).isoformat(),
     }
@@ -484,6 +489,11 @@ async def resolve_proposal(
         return {"error": "forbidden"}
     edits = edits or {}
     if action == "accept":
+        # Owner can promote a `propose_shared=True` proposal into the shared
+        # baseline (visible to everyone). Non-owner accepts always stay
+        # private, even if the proposal asked for shared — the guardrail
+        # is that only the owner curates J's public knowledge.
+        share_it = bool(prop.get("propose_shared")) and is_owner
         await add_fact(
             db,
             user_id=prop.get("user_id") or caller_user_id,
@@ -494,12 +504,12 @@ async def resolve_proposal(
             source_url=edits.get("source_url", ""),
             source_query=prop.get("source", ""),
             signer="J+user",
-            shared=False,  # user-taught facts stay private by default
+            shared=share_it,
         )
         await db.knowledge_proposals.update_one(
             {"id": prop_id}, {"$set": {"status": "accepted"}},
         )
-        return {"ok": True, "action": "accepted"}
+        return {"ok": True, "action": "accepted", "shared": share_it}
     if action == "reject":
         await db.knowledge_proposals.update_one(
             {"id": prop_id}, {"$set": {"status": "rejected"}},
