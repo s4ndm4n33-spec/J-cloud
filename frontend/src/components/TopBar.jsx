@@ -25,6 +25,7 @@ export default function TopBar({
   const [snapMeta, setSnapMeta] = useState(null); // {ts, bytes, hash}
   const [snapBusy, setSnapBusy] = useState(false);
   const [snapMsg, setSnapMsg] = useState(null);   // transient banner
+  const [savePulse, setSavePulse] = useState(0);  // key increments on every save → CSS pulse retriggers
 
   async function refreshSnapshotMeta(projectId) {
     if (!projectId) { setSnapMeta(null); return; }
@@ -56,6 +57,7 @@ export default function TopBar({
     try {
       const r = await snapshotProject(activeProject.project_id);
       setSnapMsg(r.unchanged ? "// nothing to save" : `// saved · ${Math.round((r.bytes || 0) / 1024)} KB`);
+      setSavePulse((n) => n + 1);
       refreshSnapshotMeta(activeProject.project_id);
     } catch (e) {
       setSnapMsg(`// save failed: ${e?.response?.data?.detail || e.message}`);
@@ -209,9 +211,17 @@ export default function TopBar({
                   title={snapMeta?.ts
                     ? `Save workspace to cloud (last saved ${relTime(snapMeta.ts)})`
                     : "Save workspace to cloud — required to survive redeploys"}
-                  className="text-alloy hover:text-cyan transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="relative text-alloy hover:text-cyan transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <FloppyDisk size={14} weight={snapMeta?.ts ? "regular" : "fill"} />
+                  {savePulse > 0 && (
+                    <span
+                      key={savePulse}
+                      data-testid="workspace-save-pulse"
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 -m-1 rounded-full save-pulse"
+                    />
+                  )}
                 </button>
                 <button
                   data-testid="workspace-restore-button"
