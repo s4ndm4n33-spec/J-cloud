@@ -587,7 +587,7 @@ async def _tool_web_search(ctx: ToolContext, query: str, max_results: int = 5) -
     db_ref = getattr(ctx, "db", None)
     if db_ref is None:
         return {"error": "knowledge store not wired into this ctx"}
-    result = await km.web_search(db_ref, api_key, query, max_results=max_results)
+    result = await km.web_search(db_ref, api_key, query, user_id=ctx.user_id, max_results=max_results)
     if result.get("error"):
         return result
     # Per-user scoping — auto-learned facts stay private to the caller. Owner

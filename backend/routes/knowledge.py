@@ -94,16 +94,23 @@ async def knowledge_facts(
     category: str | None = None,
     tag: str | None = None,
     q: str | None = None,
+    shared: bool | None = None,
     limit: int = 50,
     user: dict = Depends(get_current_user),
 ):
+    """List facts. Non-owner sees own + shared baseline. Owner sees all.
+    Pass `shared=true` to filter for facts currently in the public baseline
+    (the audit view — used by the owner to curate what's visible to everyone).
+    """
     await _ensure_ready()
     docs = await km.list_facts(
         db,
         user_id=user["user_id"], is_owner=_is_owner(user),
         category=category, tag=tag, q=q, limit=limit,
     )
-    return {"facts": docs, "count": len(docs)}
+    if shared is not None:
+        docs = [d for d in docs if bool(d.get("shared")) == bool(shared)]
+    return {"facts": docs, "count": len(docs), "is_owner": _is_owner(user)}
 
 
 @router.delete("/knowledge/facts/{fact_id}")
@@ -188,7 +195,7 @@ async def knowledge_search(payload: dict, user: dict = Depends(get_current_user)
         })
     query = (payload or {}).get("query", "")
     max_results = int((payload or {}).get("max_results", 5))
-    result = await km.web_search(db, TAVILY_API_KEY, query, max_results=max_results)
+    result = await km.web_search(db, TAVILY_API_KEY, query, user_id=user["user_id"], max_results=max_results)
     if result.get("error"):
         raise HTTPException(status_code=502, detail=result["error"])
     if (payload or {}).get("learn", True):
@@ -282,7 +289,7 @@ async def knowledge_export(
 async def training_dpo_export(
     scope: str | None = None,   # "chat" | "agent" | "web" | None (all)
     since: str | None = None,   # ISO date string; only entries after this ts
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     """Stream DPO-shaped JSONL from two sources:
 
@@ -294,13 +301,19 @@ async def training_dpo_export(
 
     Every web_search now generates real DPO preference pairs. No synthetic
     negatives — the "rejected" side is real forum/thin/low-score content.
+
+    Scoping: non-owner exports only their OWN chronicle + DPO pairs. Owner
+    exports everything (per the owner-lock convention).
     """
     await _ensure_ready()
+    owner = _is_owner(user)
 
     async def gen():
         # Source 1: chronicle ai_answer rows
         if scope in (None, "chat", "agent"):
             q1: dict = {"kind": "ai_answer"}
+            if not owner:
+                q1["user_id"] = user["user_id"]
             if scope:
                 q1["scope"] = scope
             if since:
@@ -330,6 +343,8 @@ async def training_dpo_export(
         # Source 2: web_search DPO candidates (chosen fact + rejected Tavily result)
         if scope in (None, "web"):
             q2: dict = {}
+            if not owner:
+                q2["user_id"] = user["user_id"]
             if since:
                 q2["ts"] = {"$gte": since}
             async for doc in db.knowledge_dpo_candidates.find(q2, {"_id": 0}):

@@ -71,6 +71,12 @@ export async function deleteProject(project_id) {
   return (await client.delete(`/projects/${project_id}`)).data;
 }
 
+// ----- Chat history (server-side rehydration; source of truth) -----
+export async function getChatHistory(conversation_id) {
+  return (await client.get("/ai/chat/history",
+    { params: { conversation_id } })).data;
+}
+
 // ----- Workspace persistence (hybrid R2 auto+manual snapshot) -----
 export async function snapshotProject(project_id) {
   return (await client.post(`/projects/${project_id}/snapshot`, {})).data;

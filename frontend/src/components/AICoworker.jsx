@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone, Brain } from "@phosphor-icons/react";
-import { aiChatStream, aiAgentStream, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
+import { aiChatStream, aiAgentStream, aiRefine, aiGovernance, evaluateGauntlet, getChatHistory } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
 import KnowledgePanel from "@/components/KnowledgePanel";
@@ -71,6 +71,61 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
   useEffect(() => {
     localStorage.setItem(chatStorageKey + ".agentMode", chatAgentMode ? "1" : "0");
   }, [chatAgentMode, chatStorageKey]);
+
+  // Eidetic memory — server rehydration on mount.
+  //
+  // localStorage is a paint-cache; Mongo is the black box. If a conversation
+  // id survived the refresh, ask the server for the authoritative history
+  // and reconcile. If the server has more turns than local cache (e.g. the
+  // last assistant reply committed to Mongo but the browser died before
+  // localStorage flushed), we splice the missing turns back in and inject a
+  // one-shot system marker so J knows she just resumed a live thread.
+  //
+  // Runs once per (project, conversationId) — the ref key prevents re-fetch
+  // storms when the parent re-renders.
+  const rehydratedFor = useRef(null);
+  useEffect(() => {
+    if (!chatConversationId) return;
+    const key = `${project?.project_id || "_"}::${chatConversationId}`;
+    if (rehydratedFor.current === key) return;
+    rehydratedFor.current = key;
+    (async () => {
+      try {
+        const r = await getChatHistory(chatConversationId);
+        const serverMsgs = (r?.messages || [])
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role, content: m.content, meta: m.meta, ts: m.ts }));
+        if (serverMsgs.length === 0) return;
+
+        // Count real turns in local cache (skip synthetic system lines).
+        const localReal = chatMessages.filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        ).length;
+        const gap = serverMsgs.length - localReal;
+        if (gap <= 0) return; // local is already at/ahead of server — nothing to do
+
+        // Server is ahead. Trust it. Rebuild the message stream:
+        // [original system boot line] + serverMsgs + [awareness marker]
+        const bootLine = chatMessages.find((m) => m.role === "system") || {
+          role: "system",
+          content: "J is online. Five Masters loaded. What needs building?",
+        };
+        setChatMessages([
+          bootLine,
+          ...serverMsgs,
+          {
+            role: "system",
+            content: `// RESUMED · ${serverMsgs.length} prior turn${serverMsgs.length === 1 ? "" : "s"} loaded from the black box. J has full context.`,
+          },
+        ]);
+      } catch (e) {
+        // Silent — this is a UX enhancement, not a correctness dependency.
+        // The server will still see the full transcript on the next turn
+        // because /ai/chat rehydrates from Mongo directly.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatConversationId, project?.project_id]);
 
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">

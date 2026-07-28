@@ -154,7 +154,33 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
     except Exception as e:
         log.warning(f"mind recall (chat) failed: {e}")
 
-    ctx_parts = [p for p in (ctx, mind_block) if p]
+    # Eidetic memory — pull prior turns of THIS conversation from Mongo and
+    # prepend them to the transcript. Previously chat relied on the LLM SDK's
+    # in-process session cache keyed by (user, conversation) — which is dead
+    # weight after a pod restart, a chain retry to a different provider, or
+    # a chain step to a different SDK. Reading from Mongo makes J's memory
+    # survive every one of those.
+    prior_turns_block = ""
+    try:
+        prior_docs = await db.messages.find(
+            {"conversation_id": conversation_id, "user_id": user["user_id"]},
+            {"_id": 0, "role": 1, "content": 1, "ts": 1},
+        ).sort("ts", 1).to_list(50)  # cap at 50 recent turns — enough context, bounded tokens
+        lines: list[str] = []
+        for h in prior_docs:
+            role = h.get("role")
+            body = (h.get("content") or "")[:2000]
+            if role == "user":
+                lines.append(f"[USER]\n{body}")
+            elif role == "assistant":
+                lines.append(f"[J]\n{body}")
+        if lines:
+            prior_turns_block = ("[CONVERSATION HISTORY — you already said all of this; "
+                                 "do not repeat or re-greet]\n\n" + "\n\n".join(lines))
+    except Exception as e:
+        log.warning(f"chat history rehydrate failed: {e}")
+
+    ctx_parts = [p for p in (ctx, mind_block, prior_turns_block) if p]
     user_text = ("\n\n".join(ctx_parts) + f"\n\n[USER]\n{message}") if ctx_parts else message
 
     if project_id:

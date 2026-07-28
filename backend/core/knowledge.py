@@ -151,9 +151,11 @@ async def _ensure_indexes(db) -> None:
     await db.knowledge_proposals.create_index([("status", 1), ("ts", -1)])
     await db.knowledge_proposals.create_index([("user_id", 1), ("status", 1)])
     await db.knowledge_search_log.create_index([("ts", -1)])
+    await db.knowledge_search_log.create_index([("user_id", 1)])
     # DPO candidates: rejected Tavily results kept for preference-pair training.
     await db.knowledge_dpo_candidates.create_index([("ts", -1)])
     await db.knowledge_dpo_candidates.create_index([("chosen_fact_id", 1)])
+    await db.knowledge_dpo_candidates.create_index([("user_id", 1)])
 
 
 async def migrate_legacy_facts(db, owner_user_id: str) -> dict[str, int]:
@@ -526,14 +528,17 @@ async def web_search(
     api_key: str,
     query: str,
     *,
+    user_id: str,
     max_results: int = 5,
     include_answer: bool = True,
 ) -> dict[str, Any]:
-    """Run a Tavily search, log it, and return normalised JSON."""
+    """Run a Tavily search, log it (scoped to `user_id`), return normalised JSON."""
     if not api_key:
         return {"error": "TAVILY_API_KEY not configured on the server."}
     if not (query or "").strip():
         return {"error": "empty query"}
+    if not user_id:
+        return {"error": "user_id required for web_search"}
     try:
         from tavily import AsyncTavilyClient
         client = AsyncTavilyClient(api_key=api_key)
@@ -549,6 +554,7 @@ async def web_search(
         return {"error": f"tavily failure: {type(e).__name__}: {str(e)[:200]}"}
 
     await db.knowledge_search_log.insert_one({
+        "user_id": user_id,
         "query": query,
         "results_count": len(resp.get("results", []) or []),
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -708,6 +714,8 @@ async def auto_learn_from_search(
             for rej in rejected_pool:
                 dpo_docs.append({
                     "id": f"dpo_{uuid.uuid4().hex[:12]}",
+                    "user_id": user_id,   # per-user scoping — same rule as facts
+                    "shared": bool(shared),
                     "query": query,
                     "category": category,
                     "chosen_fact_id": chosen_id,
