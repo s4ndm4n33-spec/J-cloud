@@ -46,15 +46,46 @@ def _now() -> str:
 
 @router.get("/training/health")
 async def training_health(user: dict = Depends(get_current_user)):
-    """Ping. Bubble calls this from `/auth` to validate the owner token."""
+    """Ping. Bubble/Bolt console call this from `/auth` to validate the
+    owner token and see which pieces of the training pipeline are wired.
+
+    Returns fields both under the legacy names AND the shorter names the
+    current bolt console expects (`version`, `storage`, `webhook`) so a
+    green ✅ shows up per-component instead of a bare `vundefined`.
+    """
     is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    version = os.environ.get("BACKEND_VERSION", "0.9.1")
+    # R2 is our storage substrate — the S3_BUCKET name is legacy from an
+    # earlier draft that never shipped. Check R2 primarily; fall back to
+    # S3_BUCKET so the field never regresses.
+    storage_ok = bool(
+        os.environ.get("R2_BUCKET")
+        and os.environ.get("R2_ACCESS_KEY_ID")
+        and os.environ.get("R2_SECRET_ACCESS_KEY")
+    ) or bool(os.environ.get("S3_BUCKET"))
+    modal_ok = bool(
+        os.environ.get("MODAL_TOKEN_ID")
+        and os.environ.get("MODAL_TOKEN_SECRET")
+    )
+    webhook_ok = bool(os.environ.get("TRAINING_WEBHOOK_SECRET"))
+    public_url = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+    training_enabled = (
+        os.environ.get("TRAINING_ENABLED", "false").lower() == "true"
+    )
     return {
         "ok": True,
         "owner": is_owner,
-        "backend_version": os.environ.get("BACKEND_VERSION", "0.9.0"),
-        "modal_configured": bool(os.environ.get("MODAL_TOKEN_ID")),
-        "storage_configured": bool(os.environ.get("S3_BUCKET")),
-        "training_enabled": (os.environ.get("TRAINING_ENABLED", "false").lower() == "true"),
+        # New / short-form field names for the bolt training console
+        "version": version,
+        "storage": storage_ok,
+        "modal": modal_ok,
+        "webhook": webhook_ok,
+        "public_backend_url": public_url,
+        "training_enabled": training_enabled,
+        # Legacy names retained for backwards compat with earlier callers
+        "backend_version": version,
+        "modal_configured": modal_ok,
+        "storage_configured": storage_ok,
     }
 
 
