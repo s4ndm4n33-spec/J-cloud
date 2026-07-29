@@ -45,6 +45,8 @@ replica_concurrency = 1         # LoRA + generate is not thread-safe per GPU
 # Pinned floors — Cerebrium resolves the latest patch of each. Keep in
 # sync with training/train.py's stack so adapters load without version
 # drift between the trainer and the server.
+setuptools         = ">=68.0.0"   # provides pkg_resources for legacy deps
+wheel              = "latest"
 torch              = ">=2.4.0"
 transformers       = ">=4.44.0"
 peft               = ">=0.13.0"
