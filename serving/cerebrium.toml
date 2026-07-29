@@ -1,0 +1,59 @@
+# Cerebrium deployment manifest — LoRA adapter serving for J
+#
+# Loads a base model (Qwen 2.5 / Llama 3.1) and applies a LoRA adapter
+# streamed from Cloudflare R2. Each fine-tuned run produced by the Modal
+# training pipeline lands at s3://{R2_BUCKET}/adapters/{run_id}/ and is
+# served through this endpoint on demand.
+#
+# Deploy:   cerebrium deploy       (from /app/serving/)
+# Runtime:  POST https://run.cerebrium.ai/v4/{project-id}/j-lora-serving/predict
+#
+# Secrets required (set via `cerebrium secrets` before first deploy):
+#   R2_ACCOUNT_ID         Cloudflare account id
+#   R2_ACCESS_KEY_ID      R2 S3-compatible access key
+#   R2_SECRET_ACCESS_KEY  R2 S3-compatible secret
+#   R2_BUCKET             bucket where /adapters/{run_id}/ lives
+#   HUGGINGFACE_HUB_TOKEN required for gated Llama repos (Qwen is open)
+
+[cerebrium.deployment]
+name = "j-lora-serving"
+python_version = "3.11"
+docker_base_image_url = "nvidia/cuda:12.4.1-runtime-ubuntu22.04"
+disable_animation = false
+include = ["./*"]
+exclude = [".*", "*.log", "__pycache__", ".venv"]
+
+[cerebrium.hardware]
+# A10 (24GB) — comfortable headroom for 7B/8B models in 4bit + LoRA.
+# For 14B step up to AMPERE_A100_40GB. For 70B use HOPPER_H100.
+region             = "us-east-1"
+gpu                = "AMPERE_A10"
+gpu_count          = 1
+cpu                = 4
+memory             = 24.0
+
+[cerebrium.scaling]
+# min=0 lets the endpoint scale to zero when idle — cheapest for a
+# personal / small-user-base serving pattern. Bump min to 1 if you need
+# sub-second cold-starts on the first request of a day.
+min_replicas       = 0
+max_replicas       = 3
+cooldown           = 60         # seconds of inactivity before scale-down
+replica_concurrency = 1         # LoRA + generate is not thread-safe per GPU
+
+[cerebrium.dependencies.pip]
+# Pinned floors — Cerebrium resolves the latest patch of each. Keep in
+# sync with training/train.py's stack so adapters load without version
+# drift between the trainer and the server.
+torch              = ">=2.4.0"
+transformers       = ">=4.44.0"
+peft               = ">=0.13.0"
+accelerate         = ">=0.34.0"
+bitsandbytes       = ">=0.43.0"
+sentencepiece      = "latest"
+protobuf           = "latest"
+boto3              = ">=1.35.0"
+pydantic           = ">=2.7.0"
+
+[cerebrium.dependencies.apt]
+git = "latest"
