@@ -71,6 +71,24 @@ export async function deleteProject(project_id) {
   return (await client.delete(`/projects/${project_id}`)).data;
 }
 
+// ----- Chat history (server-side rehydration; source of truth) -----
+export async function getChatHistory(conversation_id) {
+  return (await client.get("/ai/chat/history",
+    { params: { conversation_id } })).data;
+}
+
+// ----- Workspace persistence (hybrid R2 auto+manual snapshot) -----
+export async function snapshotProject(project_id) {
+  return (await client.post(`/projects/${project_id}/snapshot`, {})).data;
+}
+export async function restoreProject(project_id) {
+  return (await client.post(`/projects/${project_id}/restore`, {})).data;
+}
+export async function listSnapshots(project_id, limit = 20) {
+  return (await client.get(`/projects/${project_id}/snapshots`,
+    { params: { limit } })).data;
+}
+
 export async function evaluateGauntlet(code, language) {
   return (await client.post("/gauntlet/evaluate", { code, language })).data;
 }
@@ -129,9 +147,11 @@ async function _sseStream(url, body, { onHeartbeat, onDone, onError }) {
     body: JSON.stringify(body || {}),
   });
   if (!resp.ok) {
-    // Non-2xx (e.g. rate limit before stream started). Parse JSON error.
+    // Non-2xx (e.g. rate limit before stream started). Read once, then try JSON.
+    // Never do resp.json() + resp.text() — the body stream can only be read once.
+    const raw = await resp.text();
     let detail;
-    try { detail = (await resp.json()).detail; } catch { detail = await resp.text(); }
+    try { detail = JSON.parse(raw).detail; } catch { detail = raw; }
     const err = new Error(`HTTP ${resp.status}`);
     err.response = { status: resp.status, data: { detail } };
     throw err;
@@ -439,8 +459,9 @@ export async function getKnowledgeFacts({ category, tag, q, limit = 50 } = {}) {
 export async function deleteKnowledgeFact(id) {
   return (await client.delete(`/knowledge/facts/${id}`)).data;
 }
-export async function getKnowledgeProposals(status = "pending") {
-  return (await client.get("/knowledge/proposals", { params: { status } })).data;
+export async function getKnowledgeProposals(status = "pending", { sharedOnly = false } = {}) {
+  return (await client.get("/knowledge/proposals",
+    { params: { status, shared_only: sharedOnly } })).data;
 }
 export async function resolveKnowledgeProposal(id, action, edits) {
   return (await client.post(`/knowledge/proposals/${id}/${action}`, edits ? { edits } : {})).data;
@@ -453,4 +474,26 @@ export async function knowledgeRecall(query, { k = 5, category } = {}) {
 }
 export async function getKnowledgeCategories() {
   return (await client.get("/knowledge/categories")).data;
+}
+
+// ----- User reports (bug / error / question / feedback / suggestion) -----
+export async function submitReport(payload) {
+  return (await client.post("/reports", payload)).data;
+}
+export async function listReports({ status, kind, limit = 50 } = {}) {
+  return (await client.get("/reports", { params: { status, kind, limit } })).data
+    // eslint-disable-next-line no-return-await
+    ?? (await client.get("/admin/reports", { params: { status, kind, limit } })).data;
+}
+export async function adminListReports({ status, kind, limit = 50 } = {}) {
+  return (await client.get("/admin/reports", { params: { status, kind, limit } })).data;
+}
+export async function adminMarkReportRead(id) {
+  return (await client.post(`/admin/reports/${id}/read`)).data;
+}
+export async function adminMarkReportResolved(id, note = "") {
+  return (await client.post(`/admin/reports/${id}/resolve`, { note })).data;
+}
+export async function adminTelemetry({ failed_only = true, days = 1, limit = 50 } = {}) {
+  return (await client.get("/admin/telemetry", { params: { failed_only, days, limit } })).data;
 }

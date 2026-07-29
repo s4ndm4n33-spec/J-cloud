@@ -16,7 +16,7 @@ from deps import db, get_current_user, log, project_path, EMERGENT_LLM_KEY, TAVI
 from core.agent_prompt import AGENT_PROMPT
 from core.destructive import scan as destructive_scan
 from core.fivemasters import evaluate as fm_evaluate
-from core.guardrails import redact_substrate_leaks, log_flag as log_abuse_flag
+from core.guardrails import redact_substrate_leaks, owner_system_prompt, log_flag as log_abuse_flag
 from core.keyvault import decrypt_key
 from core.migration_log import log_tool_event
 from core import knowledge as km
@@ -34,9 +34,12 @@ from chronicle_helpers import chronicle_narrative, chronicle_session_start
 router = APIRouter()
 
 # Rate limits (owner is exempt — see core/ratelimit.set_owner_id).
-# Chat/refine: 12 req/min. Agent: 6 req/min (heavier turns, more tool calls).
-_CHAT_CAP, _CHAT_REFILL = 12, 12 / 60.0
-_AGENT_CAP, _AGENT_REFILL = 6, 6 / 60.0
+# These caps guard OUR infra (disk, git, tool calls, Modal) — NOT LLM credits.
+# Non-owner users pay their own token costs via BYOK, so the caps are set
+# high enough that a real pair-programming flow won't hit them; low enough
+# that a burst-abuse client (mashed enter, rogue script) still gets 429'd.
+_CHAT_CAP, _CHAT_REFILL = 60, 60 / 60.0
+_AGENT_CAP, _AGENT_REFILL = 30, 30 / 60.0
 
 
 def _build_context_block(payload: dict) -> str:
@@ -138,16 +141,46 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
     project_id = payload.get("project_id")
     ctx = _build_context_block(payload)
 
-    # J:MIND — pull top-K remembered facts relevant to this message and
-    # prepend them so plain chat gets sharper with every session too.
+    # J:MIND — pull top-K remembered facts relevant to this message,
+    # scoped to this user's own facts + owner-curated shared baseline.
     mind_block = ""
     try:
-        mind_hits = await km.recall(db, message, k=5)
+        _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+        mind_hits = await km.recall(
+            db, message,
+            user_id=user["user_id"], is_owner=_is_owner, k=5,
+        )
         mind_block = km.format_recall_for_prompt(mind_hits)
     except Exception as e:
         log.warning(f"mind recall (chat) failed: {e}")
 
-    ctx_parts = [p for p in (ctx, mind_block) if p]
+    # Eidetic memory — pull prior turns of THIS conversation from Mongo and
+    # prepend them to the transcript. Previously chat relied on the LLM SDK's
+    # in-process session cache keyed by (user, conversation) — which is dead
+    # weight after a pod restart, a chain retry to a different provider, or
+    # a chain step to a different SDK. Reading from Mongo makes J's memory
+    # survive every one of those.
+    prior_turns_block = ""
+    try:
+        prior_docs = await db.messages.find(
+            {"conversation_id": conversation_id, "user_id": user["user_id"]},
+            {"_id": 0, "role": 1, "content": 1, "ts": 1},
+        ).sort("ts", 1).to_list(50)  # cap at 50 recent turns — enough context, bounded tokens
+        lines: list[str] = []
+        for h in prior_docs:
+            role = h.get("role")
+            body = (h.get("content") or "")[:2000]
+            if role == "user":
+                lines.append(f"[USER]\n{body}")
+            elif role == "assistant":
+                lines.append(f"[J]\n{body}")
+        if lines:
+            prior_turns_block = ("[CONVERSATION HISTORY — you already said all of this; "
+                                 "do not repeat or re-greet]\n\n" + "\n\n".join(lines))
+    except Exception as e:
+        log.warning(f"chat history rehydrate failed: {e}")
+
+    ctx_parts = [p for p in (ctx, mind_block, prior_turns_block) if p]
     user_text = ("\n\n".join(ctx_parts) + f"\n\n[USER]\n{message}") if ctx_parts else message
 
     if project_id:
@@ -167,8 +200,10 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
         "ts": datetime.now(timezone.utc).isoformat(),
     })
 
+    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    chat_system = owner_system_prompt(CHAT_PROMPT) if is_owner else CHAT_PROMPT
     reply, meta = await chain_call(
-        user["user_id"], "chat", CHAT_PROMPT, user_text,
+        user["user_id"], "chat", chat_system, user_text,
         f"{user['user_id']}-{conversation_id}",
     )
     if not meta["success"]:
@@ -178,11 +213,30 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
                 "message": "Bring your own key. Add an OpenAI / Anthropic / Gemini / Ollama key in Settings to use J.",
                 "attempts": meta.get("attempts", []),
             })
+        # Build a per-step diagnostic so the user can see exactly which of
+        # THEIR providers failed and why — instead of a vague "chain exhausted".
+        attempts = meta.get("attempts", []) or []
+        step_lines: list[str] = []
+        for a in attempts[:8]:
+            src = a.get("source", "?")
+            prov = a.get("provider", "?")
+            err = (a.get("error") or a.get("reason") or "unknown")[:100]
+            step_lines.append(f"//   {src:9s} {prov:10s} — {err}")
+
+        if is_owner:
+            hint = "// Add balance to your Universal Key, or verify BYOK provider status."
+        else:
+            hint = ("// Every BYOK provider failed. Common causes: expired key, quota hit, "
+                    "or wrong region. Update your keys in Settings (gear icon).")
         reply = (
-            "// J:OFFLINE — entire LLM failover chain exhausted.\n"
-            "// Add a provider key in Settings (gear icon) or top up Universal Key balance.\n"
-            f"// last attempts: {len(meta['attempts'])}"
+            f"// J:OFFLINE — all {len(attempts)} chain steps failed.\n"
+            f"{chr(10).join(step_lines) if step_lines else '//   (no attempt telemetry)'}\n"
+            f"{hint}"
         )
+    elif is_owner:
+        # Owner sees the raw LLM output — no post-hoc redaction. J is trusted
+        # to introspect when the OWNER_INTROSPECTION_CLAUSE is in the prompt.
+        pass
     else:
         # Substrate secrecy filter — only apply to actual LLM output, never
         # to synthetic status messages we generated ourselves.
@@ -275,9 +329,27 @@ async def _stream_task_with_heartbeats(
                     "detail": e.detail,
                 })
                 return
-    except asyncio.CancelledError:  # noqa: BLE001
-        task.cancel()
-        raise
+            except asyncio.CancelledError:
+                # Client disconnected mid-stream. Cancel the upstream task,
+                # then re-raise so FastAPI can shut the response cleanly.
+                task.cancel()
+                raise
+            except Exception as e:  # noqa: BLE001
+                # ANY other failure (LLM SDK error, provider outage, timeout,
+                # rate-limit not wrapped as HTTPException, etc.) MUST be
+                # surfaced as an SSE error frame — otherwise the generator
+                # dies silently and the client hangs until the ingress cuts
+                # at ~100s, which is exactly what was happening in prod.
+                log.exception("chat_stream_task_failed")
+                yield _sse_frame("error", {
+                    "status": 500,
+                    "detail": {"message": f"{type(e).__name__}: {e}",
+                               "code": "stream_task_failed"},
+                })
+                return
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 def _stream_response(gen: AsyncIterator[str]) -> StreamingResponse:
@@ -342,14 +414,18 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     refined = _strip_code_fences(reply)
     # Substrate secrecy filter on refined code output too — J shouldn't be
     # coerced into leaking internals via a "refine this file" attack.
-    original_refined = refined
-    refined, leak_hits = redact_substrate_leaks(refined)
-    if leak_hits:
-        log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
-        meta["substrate_redacted"] = True
-        await log_abuse_flag(db, user["user_id"], "substrate_leak",
-                             matched=";".join(leak_hits[:5]),
-                             snippet=original_refined, route="/ai/refine")
+    # Owner bypass: the operator can refine any of their own internals.
+    if OWNER_USER_ID and user["user_id"] == OWNER_USER_ID:
+        leak_hits = []
+    else:
+        original_refined = refined
+        refined, leak_hits = redact_substrate_leaks(refined)
+        if leak_hits:
+            log.warning(f"substrate leak redacted (refine) user={user['user_id']} hits={leak_hits[:5]}")
+            meta["substrate_redacted"] = True
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(leak_hits[:5]),
+                                 snippet=original_refined, route="/ai/refine")
     ast_report = fm_evaluate(refined, language).to_dict()
     danger = destructive_scan(refined)
     return {
@@ -500,11 +576,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
     _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
     ctx.tavily_key = TAVILY_API_KEY if _is_owner else ""
 
-    # --- J:MIND recall — inject top-K globally learned facts relevant to
-    # the user's current message into her system context. This is the
-    # "learn from web + accepted proposals" payoff loop.
+    # --- J:MIND recall — inject top-K facts scoped to this user (own facts
+    # UNION owner-curated shared baseline). Fixes the "collaborative
+    # workspace" leak where one user's Tavily auto-learn was surfacing in
+    # another user's agent context.
     try:
-        mind_hits = await km.recall(db, message, k=5)
+        mind_hits = await km.recall(
+            db, message,
+            user_id=user["user_id"], is_owner=_is_owner, k=5,
+        )
         mind_block = km.format_recall_for_prompt(mind_hits)
         if mind_block:
             transcript_for_llm.append(mind_block)
@@ -522,10 +602,13 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
     no_tool_streak = 0
     NO_TOOL_STREAK_MAX = 2 if auto_mode else 1
 
+    is_owner = _is_owner  # computed at line 512 above from OWNER_USER_ID
+    agent_system = owner_system_prompt(AGENT_PROMPT) if is_owner else AGENT_PROMPT
+
     for step_idx in range(max_steps):
         user_text = "\n\n".join(transcript_for_llm) + "\n\n[J]\n"
         reply, meta = await chain_call(
-            user["user_id"], "chat", AGENT_PROMPT, user_text,
+            user["user_id"], "chat", agent_system, user_text,
             f"{user['user_id']}-agent-{conversation_id}-{step_idx}",
         )
         if not meta["success"]:
@@ -546,11 +629,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         calls = parse_tool_calls(reply)
         # Substrate secrecy filter on the prose the user actually sees. Tool
         # calls are unaffected (they're structured invocations, not disclosure).
-        original_prose = prose
-        prose, prose_leaks = redact_substrate_leaks(prose)
-        if prose_leaks:
-            log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
-            meta["substrate_redacted"] = True
+        # Skip the filter entirely for the OWNER — they can see everything.
+        if is_owner:
+            prose_leaks: list[str] = []
+        else:
+            original_prose = prose
+            prose, prose_leaks = redact_substrate_leaks(prose)
+            if prose_leaks:
+                log.warning(f"substrate leak redacted (agent step {step_idx}) user={user['user_id']} hits={prose_leaks[:5]}")
+                meta["substrate_redacted"] = True
             await log_abuse_flag(db, user["user_id"], "substrate_leak",
                                  matched=";".join(prose_leaks[:5]),
                                  snippet=original_prose, route=f"/ai/agent#step{step_idx}")
@@ -684,7 +771,22 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
                 "content": json.dumps({"args": call.get("args", {}), "result": result})[:6000],
                 "ts": datetime.now(timezone.utc).isoformat(),
             })
-            transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{json.dumps(result)[:1500]}")
+            # Serialize the tool result into the LLM transcript. Failures get
+            # a distinct, high-salience header ([TOOL FAILED]) so the LLM
+            # can't skim past them — J needs to recognize when a call didn't
+            # do what she asked and either retry or change approach.
+            _r_str = json.dumps(result)[:1500]
+            if isinstance(result, dict) and result.get("error"):
+                transcript_for_llm.append(
+                    f"[TOOL FAILED — {call['name']}]\n"
+                    f"ERROR: {str(result.get('error'))[:400]}\n"
+                    f"raw result: {_r_str}\n"
+                    "// This tool call did NOT succeed. Do not pretend it did. "
+                    "Retry with corrected args, try a different tool, or tell "
+                    "the user you cannot complete the request."
+                )
+            else:
+                transcript_for_llm.append(f"[TOOL RESULT — {call['name']}]\n{_r_str}")
 
             if result.get("_done"):
                 # Verification gate: J cannot claim done if he touched code
@@ -700,7 +802,12 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
                     # rejection (both for J's next-turn context and audit).
                     steps[-1]["result"] = result
                     transcript_for_llm[-1] = (
-                        f"[TOOL RESULT — done]\n" + json.dumps(result)[:1500]
+                        f"[TOOL FAILED — done]\n"
+                        f"ERROR: {verify_err[:400]}\n"
+                        f"raw result: {json.dumps(result)[:1500]}\n"
+                        "// You attempted `done` but the verification gate rejected it. "
+                        "You must run a test / typecheck / lint against the code you "
+                        "touched THIS SESSION before attempting `done` again."
                     )
                     continue
                 is_done = True
@@ -719,13 +826,15 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
         final_summary = "// Stopped at max_steps. Send another message to continue."
 
     # Final substrate-secrecy pass on the summary the user reads at the end.
-    original_final = final_summary
-    final_summary, _sfl = redact_substrate_leaks(final_summary)
-    if _sfl:
-        log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
-        await log_abuse_flag(db, user["user_id"], "substrate_leak",
-                             matched=";".join(_sfl[:5]),
-                             snippet=original_final, route="/ai/agent#final")
+    # Skip for OWNER — is_owner set at top of agent loop.
+    if not is_owner:
+        original_final = final_summary
+        final_summary, _sfl = redact_substrate_leaks(final_summary)
+        if _sfl:
+            log.warning(f"substrate leak redacted (agent final) user={user['user_id']} hits={_sfl[:5]}")
+            await log_abuse_flag(db, user["user_id"], "substrate_leak",
+                                 matched=";".join(_sfl[:5]),
+                                 snippet=original_final, route="/ai/agent#final")
 
     await db.messages.insert_one({
         "conversation_id": conversation_id, "user_id": user["user_id"],

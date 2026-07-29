@@ -55,22 +55,37 @@ async def knowledge_categories(_user: dict = Depends(get_current_user)):
     return {"categories": km.CATEGORIES}
 
 
+def _is_owner(user: dict) -> bool:
+    return bool(OWNER_USER_ID) and user.get("user_id") == OWNER_USER_ID
+
+
 @router.get("/knowledge/stats")
-async def knowledge_stats(_user: dict = Depends(get_current_user)):
+async def knowledge_stats(user: dict = Depends(get_current_user)):
+    """Per-user stats. Owner sees global counts; non-owners see only what
+    they can actually read (own + shared)."""
     await _ensure_ready()
-    total = await db.knowledge_facts.count_documents({})
-    pending = await db.knowledge_proposals.count_documents({"status": "pending"})
-    accepted = await db.knowledge_proposals.count_documents({"status": "accepted"})
-    rejected = await db.knowledge_proposals.count_documents({"status": "rejected"})
+    owner = _is_owner(user)
+    scope = km._scope_filter(user["user_id"], owner)
+    total = await db.knowledge_facts.count_documents(scope)
+    shared = await db.knowledge_facts.count_documents(
+        {**scope, "shared": True} if scope else {"shared": True}
+    )
+    prop_scope = {} if owner else {"user_id": user["user_id"]}
+    pending = await db.knowledge_proposals.count_documents({**prop_scope, "status": "pending"})
+    accepted = await db.knowledge_proposals.count_documents({**prop_scope, "status": "accepted"})
+    rejected = await db.knowledge_proposals.count_documents({**prop_scope, "status": "rejected"})
     per_cat_cursor = db.knowledge_facts.aggregate([
+        *([{"$match": scope}] if scope else []),
         {"$group": {"_id": "$category", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
     ])
     per_cat = [{"category": d["_id"], "count": d["count"]} async for d in per_cat_cursor]
     return {
         "total_facts": total,
+        "shared_facts": shared,
         "proposals": {"pending": pending, "accepted": accepted, "rejected": rejected},
         "per_category": per_cat,
+        "is_owner": owner,
     }
 
 
@@ -79,39 +94,87 @@ async def knowledge_facts(
     category: str | None = None,
     tag: str | None = None,
     q: str | None = None,
+    shared: bool | None = None,
     limit: int = 50,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
+    """List facts. Non-owner sees own + shared baseline. Owner sees all.
+    Pass `shared=true` to filter for facts currently in the public baseline
+    (the audit view — used by the owner to curate what's visible to everyone).
+    """
     await _ensure_ready()
-    docs = await km.list_facts(db, category=category, tag=tag, q=q, limit=limit)
-    return {"facts": docs, "count": len(docs)}
+    docs = await km.list_facts(
+        db,
+        user_id=user["user_id"], is_owner=_is_owner(user),
+        category=category, tag=tag, q=q, limit=limit,
+    )
+    if shared is not None:
+        docs = [d for d in docs if bool(d.get("shared")) == bool(shared)]
+    return {"facts": docs, "count": len(docs), "is_owner": _is_owner(user)}
 
 
 @router.delete("/knowledge/facts/{fact_id}")
-async def knowledge_delete_fact(fact_id: str, _user: dict = Depends(get_current_user)):
-    r = await km.delete_fact(db, fact_id)
+async def knowledge_delete_fact(fact_id: str, user: dict = Depends(get_current_user)):
+    r = await km.delete_fact(
+        db, fact_id,
+        user_id=user["user_id"], is_owner=_is_owner(user),
+    )
     if not r.get("ok"):
-        raise HTTPException(status_code=404, detail="fact not found")
+        raise HTTPException(status_code=404, detail="fact not found or not yours")
+    return r
+
+
+@router.post("/knowledge/facts/{fact_id}/share")
+async def knowledge_share_fact(
+    fact_id: str, payload: dict | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """Owner-only: mark a fact as `shared` (visible to all users) or unshare.
+    Body: {"shared": true|false}. Default true.
+    """
+    if not _is_owner(user):
+        raise HTTPException(status_code=403, detail="owner only")
+    shared = bool((payload or {}).get("shared", True))
+    r = await km.share_fact(db, fact_id, is_owner=True, shared=shared)
+    if r.get("error"):
+        raise HTTPException(status_code=404, detail=r["error"])
     return r
 
 
 @router.get("/knowledge/proposals")
 async def knowledge_proposals(
     status: str = "pending", limit: int = 100,
-    _user: dict = Depends(get_current_user),
+    shared_only: bool = False,
+    user: dict = Depends(get_current_user),
 ):
-    docs = await km.list_proposals(db, status=status, limit=limit)
-    return {"proposals": docs, "count": len(docs)}
+    """List proposals. Non-owner sees their own. Owner sees all.
+    Pass `shared_only=true` to filter for `propose_shared=True` proposals
+    (the owner review inbox for global-fact requests).
+    """
+    docs = await km.list_proposals(
+        db,
+        user_id=user["user_id"], is_owner=_is_owner(user),
+        status=status, limit=limit,
+    )
+    if shared_only:
+        docs = [p for p in docs if p.get("propose_shared")]
+    return {"proposals": docs, "count": len(docs), "is_owner": _is_owner(user)}
 
 
 @router.post("/knowledge/proposals/{prop_id}/{action}")
 async def knowledge_resolve_proposal(
     prop_id: str, action: str, payload: dict | None = None,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     if action not in {"accept", "reject"}:
         raise HTTPException(status_code=400, detail="action must be accept or reject")
-    r = await km.resolve_proposal(db, prop_id, action, edits=(payload or {}).get("edits"))
+    r = await km.resolve_proposal(
+        db, prop_id, action,
+        caller_user_id=user["user_id"], is_owner=_is_owner(user),
+        edits=(payload or {}).get("edits"),
+    )
+    if r.get("error") == "forbidden":
+        raise HTTPException(status_code=403, detail="not your proposal")
     if r.get("error"):
         raise HTTPException(status_code=404, detail=r["error"])
     return r
@@ -124,29 +187,37 @@ async def knowledge_search(payload: dict, user: dict = Depends(get_current_user)
     # OWNER LOCK: the shared TAVILY_API_KEY is only usable by the app owner.
     # Non-owner Tavily BYOK is P1 — for now, non-owners get a clean 401 so
     # the frontend can prompt onboarding.
-    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
-    if not is_owner:
+    owner = _is_owner(user)
+    if not owner:
         raise HTTPException(status_code=401, detail={
             "code": "needs_tavily_key",
             "message": "Web search requires your own Tavily API key. Add one in Settings.",
         })
     query = (payload or {}).get("query", "")
     max_results = int((payload or {}).get("max_results", 5))
-    result = await km.web_search(db, TAVILY_API_KEY, query, max_results=max_results)
+    result = await km.web_search(db, TAVILY_API_KEY, query, user_id=user["user_id"], max_results=max_results)
     if result.get("error"):
         raise HTTPException(status_code=502, detail=result["error"])
     if (payload or {}).get("learn", True):
-        result["_learn"] = await km.auto_learn_from_search(db, result)
+        # Owner-driven searches seed the shared baseline by default.
+        result["_learn"] = await km.auto_learn_from_search(
+            db, result,
+            user_id=user["user_id"], shared=True,
+        )
     return result
 
 
 @router.post("/knowledge/recall")
-async def knowledge_recall(payload: dict, _user: dict = Depends(get_current_user)):
+async def knowledge_recall(payload: dict, user: dict = Depends(get_current_user)):
     await _ensure_ready()
     query = (payload or {}).get("query", "")
     k = int((payload or {}).get("k", 5))
     category = (payload or {}).get("category")
-    hits = await km.recall(db, query, k=k, category=category)
+    hits = await km.recall(
+        db, query,
+        user_id=user["user_id"], is_owner=_is_owner(user),
+        k=k, category=category,
+    )
     return {"query": query, "hits": hits, "count": len(hits)}
 
 
@@ -170,15 +241,17 @@ async def knowledge_recall(payload: dict, _user: dict = Depends(get_current_user
 async def knowledge_export(
     format: str = "openai_sft",
     category: str | None = None,
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
-    """Stream J:MIND facts as JSONL training data."""
+    """Stream J:MIND facts as JSONL training data.
+    Scoped: non-owner exports their own facts + shared baseline; owner
+    exports everything."""
     if format not in {"openai_sft", "raw"}:
         raise HTTPException(status_code=400, detail=f"unknown format: {format}")
     await _ensure_ready()
     system_prompt = _read_agents_md() if format == "openai_sft" else ""
 
-    query: dict = {}
+    query: dict = dict(km._scope_filter(user["user_id"], _is_owner(user)))
     if category:
         query["category"] = category
 
@@ -216,7 +289,7 @@ async def knowledge_export(
 async def training_dpo_export(
     scope: str | None = None,   # "chat" | "agent" | "web" | None (all)
     since: str | None = None,   # ISO date string; only entries after this ts
-    _user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user),
 ):
     """Stream DPO-shaped JSONL from two sources:
 
@@ -228,13 +301,19 @@ async def training_dpo_export(
 
     Every web_search now generates real DPO preference pairs. No synthetic
     negatives — the "rejected" side is real forum/thin/low-score content.
+
+    Scoping: non-owner exports only their OWN chronicle + DPO pairs. Owner
+    exports everything (per the owner-lock convention).
     """
     await _ensure_ready()
+    owner = _is_owner(user)
 
     async def gen():
         # Source 1: chronicle ai_answer rows
         if scope in (None, "chat", "agent"):
             q1: dict = {"kind": "ai_answer"}
+            if not owner:
+                q1["user_id"] = user["user_id"]
             if scope:
                 q1["scope"] = scope
             if since:
@@ -264,6 +343,8 @@ async def training_dpo_export(
         # Source 2: web_search DPO candidates (chosen fact + rejected Tavily result)
         if scope in (None, "web"):
             q2: dict = {}
+            if not owner:
+                q2["user_id"] = user["user_id"]
             if since:
                 q2["ts"] = {"$gte": since}
             async for doc in db.knowledge_dpo_candidates.find(q2, {"_id": 0}):

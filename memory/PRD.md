@@ -19,6 +19,42 @@
 - **Destructive interlock** (`core/destructive.py`): regex bank for 18+ destructive patterns (`rm -rf /`, fork bombs, `mkfs`, `dd if=...of=/dev/`, raw `DROP DATABASE`, `git push --force main`, `shutil.rmtree`, etc.). Critical matches HARD-BLOCK terminal exec with HTTP 423 until a consume-once override token is obtained via password.
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
+## Fixed & Shipped (2026-02-XX) — Multi-tenant compartmentalization
+
+### J:MIND per-user scoping (leak sealed)
+- **Root cause**: `knowledge_facts` was global. User A's facts (and Tavily auto-learns) surfaced in user B's `km.recall` → LLM prompts → "collaborative workspace" symptom + amplified rate-limit / timeout failures under multi-tenant load.
+- **Fix**: added `user_id` + `shared: bool` to every fact. `recall`/`list_facts`/`delete_fact`/`add_fact`/`auto_learn_from_search`/`resolve_proposal` all take `user_id` + `is_owner`. Non-owner sees own + `shared=True`. Owner sees everything.
+- **Migration**: 103 legacy pre-scoping facts converted to `owner+shared` on startup (idempotent).
+- **New**: `POST /api/knowledge/facts/{id}/share` (owner-only) to promote/demote a fact.
+- **Tests**: `tests/test_knowledge_scoping.py` — 10 tests locking down every leak path.
+
+### Global-Fact Proposals (user → owner review)
+- `add_proposal` gained `propose_shared: bool`; J's `propose_learning` tool exposes it.
+- `GET /api/knowledge/proposals?shared_only=true` — owner review inbox.
+- `resolve_proposal`: owner accept of a `propose_shared=True` proposal → fact stored with `shared=True`. Non-owner accepts stay private (guardrail).
+- Frontend: `KnowledgePanel` PROPOSALS tab gains ALL / GLOBAL·REVIEW filter + globe badge on shared-intent proposals.
+
+### Workspace R2 Sync (hybrid persistence)
+- **Problem**: `/app/workspaces/` is NOT on a persistent volume — every redeploy wipes user code.
+- **Fix**: `core/workspace_sync.py` — snapshot project as gzipped tar → Cloudflare R2 at `workspaces/{user_id}/{project_id}/latest.tar.gz`. Hash-dedup so unchanged trees don't re-upload.
+- **Hybrid triggers** (per user choice):
+  - Auto every 5 min via background loop over projects with `last_activity` in the last 15 min
+  - Auto on chat session end (`POST /api/projects/{id}/chronicle/close-session` now returns `snapshot: {...}`)
+  - Manual `POST /api/projects/{id}/snapshot` (SAVE button in TopBar)
+- **Auto-restore**: `GET /api/projects/{id}/tree` first checks disk; if missing but `last_r2_key` set, pulls from R2 before the fallback seeder.
+- **Manual restore**: `POST /api/projects/{id}/restore` — wipes disk + re-hydrates. Frontend fires a `gauntlet:workspace-restored` window event so IDE refetches tree + drops open tabs.
+- **History**: `GET /api/projects/{id}/snapshots` returns snapshot list + latest metadata.
+- **Frontend**: TopBar now shows FloppyDisk (SAVE) + ArrowClockwise (RESTORE) buttons + "saved Xm ago" indicator.
+- **Verified**: E2E on preview — created project → wrote file → snapshot → `rm -rf` workspace dir → hit tree endpoint → auto-restored, `hello.txt` content intact.
+
+
+## Fixed (2026-02-XX) — Voice Chat / SSE stream error hole
+- **Root cause**: `_stream_task_with_heartbeats` in `routes/ai.py` only caught `HTTPException`. Any other exception raised by the LLM chain (SDK error, provider outage, `RuntimeError`) escaped the async generator silently — the SSE connection stayed open with no `done` or `error` frame, and the client hung until Cloudflare cut at ~100s. Presented in prod as "audio transcribes but no response returns" for voice, and generic "stream closed" errors for text.
+- **Backend fix**: catch generic `Exception` in the heartbeat wrapper → always emit `event: error` with `{status: 500, detail: {message, code: stream_task_failed}}`. `asyncio.CancelledError` now cleanly cancels the upstream task. Added `finally` that cancels the task if it's still running (prevents leaked tasks on client disconnect).
+- **Frontend fix (VoiceMode)**: parent (`AICoworker.jsx`) now wraps `voiceReply` as `{text, key}` with `key = Date.now()`; VoiceMode keys its `useEffect` on `speakingText?.key`. Identical or repeat replies now still trigger playback → mic loop no longer stalls. Also: if `send()` returns null (LLM error), fallback line "no response — check your keys, or say that again" is spoken so the mic resumes recording.
+- **Regression test**: `/app/backend/tests/test_stream_error_frame.py` — 3 tests covering generic exception, HTTPException, and success paths of the heartbeat wrapper. All passing.
+
+
 ## Implemented (2026-05-23)
 - **LLM Failover Chain** — Universal Key always runs first as primary. If it fails (budget, rate-limit, model down), J automatically cascades through the user's BYO keys: same provider first, then cross-provider, until one succeeds. Per-task chains:
   - **Chat**: Universal/gemini-3-flash → BYO gemini-3-flash → BYO openai gpt-5.4-mini → BYO anthropic claude-haiku-4.5
@@ -279,5 +315,79 @@ Estimated ~4 dev-days. Bubble can build against stubs in parallel.
 - POST `/datasets` creates row in Mongo with `status:"exporting"`, GET reads it back; DELETE cascades protection works
 - Promote/rollback lifecycle end-to-end functional (updates `is_current_champion` + writes activity event)
 - **150/150 backend tests still green**, zero regressions
+
+
+## 2026-02-01 — bolt.new pivot + DPO reviewer endpoints
+User rejected Bubble.io (paywall) and generated the Training Console via **bolt.new** instead. Live at https://bolt-integration-wthz.bolt.host — all 5 screens shipped (Dashboard, Runs list, DPO reviewer, Eval viewer, Settings). Neon/dark Gauntlet aesthetic preserved by the adapter prompt.
+
+### Adapter prompt strategy
+Rather than rewriting the entire 8-doc Bubble spec for bolt.new, I gave the user a one-page **adapter prepend** that instructed bolt.new to (a) ignore Bubble-specific terminology, (b) build in Vite + React + TypeScript + Tailwind + shadcn/ui, (c) treat `API_CONTRACT.md` as authoritative and everything else as design intent. Result: bolt.new produced a working scaffold in one shot.
+
+### 3 new endpoints (DPO Reviewer — the one screen bolt.new invented that didn't exist)
+- `GET  /api/training/dpo/review?limit=&status=` — lists pending/approved/rejected candidates joined with their chosen `knowledge_facts` row
+- `POST /api/training/dpo/{id}/approve` — flips `status:"approved"` + `reviewed_at` + `reviewed_by`
+- `POST /api/training/dpo/{id}/reject`  — flips `status:"rejected"` + `reviewed_at` + `reviewed_by`
+
+Path deliberately mounted at `/dpo/review` (not `/dpo`) because `GET /api/training/dpo` was already claimed by the JSONL exporter in `knowledge.py`. API_CONTRACT.md updated (endpoint count now **23**).
+
+### Verified
+- Owner GET returns 34 real pending pairs with joined chosen-fact bodies
+- Non-owner → 403; missing token → 401; unknown ID → 404
+- Approve/reject flow is idempotent; status transitions correctly
+- Existing JSONL exporter at `GET /api/training/dpo` still functional (no regression)
+- CORS preflight from `bolt-integration-wthz.bolt.host` returns `access-control-allow-origin: *` — preview backend is directly usable from the bolt.host app; owner just pastes preview URL + `test_owner_session_001` bearer into Settings
+
+### Still pending for real training
+Same list as 2026-07-20 entry: `exporter.py`, `modal_client.py`, `webhooks.py`, `eval_runner.py`, dynamic champion lookup in `llm_chain`.
+
+
+
+## 2026-07-22/23 — Training pipeline SHIPS, chat persistence, owner introspection
+
+Massive session. J now has a real training loop end-to-end and remembers everything.
+
+### Training pipeline (Phase A + B — Modal + R2 wired end-to-end)
+- `training/storage.py` — R2 client with local-disk fallback
+- `training/exporter.py` — SFT + DPO Mongo → JSONL → R2
+- `training/modal_client.py` — dispatch/cancel via Modal SDK 1.5.2
+- `training/train.py` — Modal container: pulls Qwen 2.5 Coder 7B, LoRA rank 16, uploads adapter to R2. Includes `smoke_test` for free plumbing checks.
+- `routes/training_webhooks.py` — HMAC-signed callback receiver (loss history, log lines, completion)
+- Wired `POST /api/training/runs` to `dispatch()` — real GPU training triggerable from bolt UI
+- **First real run**: `r_4bd8c3` — 92 SFT samples, loss 3.62→2.26 in 105s, adapter safetensors in `s3://j-training-artifacts/adapters/r_4bd8c3/` (38.53 MB). Cost ~$0.50.
+- Auto-registers completed runs into `training_models` — bolt Models page populated, Promote button active
+
+### Chat persistence + verbatim recall
+- `AICoworker.jsx` now saves messages + conversation_id + agent_mode to localStorage per-project. Refresh no longer nukes the thread.
+- New tool `recall_chat(query, k, since_days)` — J searches her own message history via MongoDB text index, scoped to `ctx.user_id`, returns matches + ±1 turn context. Text index auto-created on first invocation. Tested against 706 real messages across 3 user_ids.
+
+### Owner introspection unlock
+- `_OWNER_INTROSPECTION_CLAUSE` in `core/guardrails.py` swaps in for `SUBSTRATE_SECRECY_CLAUSE` on owner sessions. J can now describe her capabilities, tools, and internals to the operator — while still masking raw secret values and staying locked down for public users.
+- `owner_system_prompt(prompt)` helper. Wired into 4 callsites: chat, agent-loop, refine, agent-final-summary. Non-owner requests unchanged.
+
+### Cross-env chronicle backfill
+- `GET  /api/admin/chronicle_export?kind=&since=` — JSONL stream
+- `POST /api/admin/chronicle_import` — idempotent bulk upsert by `id`
+- Preview → prod backfill executed: 102 ai_answer rows migrated
+- Fixed pre-existing schema bug in `/training/stats` — was querying `body.verdict:"pass"` when data is top-level `verdict:"passed"`. Preview now correctly shows 92 verified answers.
+
+### Ollama / Oracle bootstrap
+- `/app/docs/oracle-ollama-bootstrap.sh` — one-shot setup for Ampere A1 (24 GB ARM). Downloads base + adapter, merges LoRA, converts q4_k_m GGUF, imports into Ollama, exposes on 0.0.0.0:11434 with 24h keep-alive. Optionally installs Cloudflare Tunnel.
+- Uploaded to R2 with 7-day signed URL for one-liner install on the VM
+
+### Verification
+- Real training run completed with LoRA adapter in R2 ✓
+- Bolt Runs list shows all 6 runs; Run Detail no longer crashes ✓
+- Bolt Models page shows `j-qwen2.5-coder-lora-v1` ✓
+- Owner sessions bypass substrate secrecy in preview (needs redeploy for prod) ✓
+- Chat persists across refresh on preview ✓
+- recall_chat tool returns real matches with context ✓
+
+### Prod redeploy needed to ship
+This session's changes live in preview only. Prod redeploy will pick up:
+- Training pipeline (exporter, dispatch, webhooks, models auto-register)
+- Owner introspection unlock
+- Chat persistence
+- recall_chat tool
+- stats bug fix (verified_answers will jump from 0 → ~92 on prod after Chronicle backfill has already landed)
 
 

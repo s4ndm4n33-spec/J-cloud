@@ -1,11 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import { PaperPlaneTilt, Sparkle, ShieldCheck, Pulse, Gauge, Wrench, CaretDown, CaretRight, Book, Microphone, Brain } from "@phosphor-icons/react";
-import { aiChatStream, aiAgentStream, aiRefine, aiGovernance, evaluateGauntlet } from "@/lib/api";
+import { aiChatStream, aiAgentStream, aiRefine, aiGovernance, evaluateGauntlet, getChatHistory } from "@/lib/api";
 import AuditPanel from "@/components/AuditPanel";
 import ChroniclePanel from "@/components/ChroniclePanel";
 import KnowledgePanel from "@/components/KnowledgePanel";
 import VoiceMode from "@/components/VoiceMode";
 import { BYOKInlineCard } from "@/components/BYOKInlineCard";
+import ReportDialog from "@/components/ReportDialog";
+import { MessageSquareWarning } from "lucide-react";
 
 const TABS = [
   { key: "chat", label: "CHAT", model: "GEMINI 3", Icon: PaperPlaneTilt },
@@ -30,12 +32,100 @@ export default function AICoworker({ project, activeTab, tree, onScoreUpdate, on
   const [tab, setTab] = useState("chat");
 
   // Chat state lifted from ChatTab so tab switches don't wipe the conversation.
-  // Only `END SESSION` (in ChatTab) clears it.
-  const [chatMessages, setChatMessages] = useState([
-    { role: "system", content: "J is online. Five Masters loaded. What needs building?" },
-  ]);
-  const [chatConversationId, setChatConversationId] = useState(null);
-  const [chatAgentMode, setChatAgentMode] = useState(true);
+  // Also persisted to localStorage per-project so a full page refresh preserves
+  // the thread — clearing only happens on explicit END SESSION in ChatTab.
+  const chatStorageKey = `j.chat.${project?.project_id || "_"}`;
+  const [chatMessages, setChatMessages] = useState(() => {
+    try {
+      const raw = localStorage.getItem(chatStorageKey + ".messages");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch { /* corrupt payload — fall through to default */ }
+    return [{ role: "system", content: "J is online. Five Masters loaded. What needs building?" }];
+  });
+  const [chatConversationId, setChatConversationId] = useState(
+    () => localStorage.getItem(chatStorageKey + ".conversationId") || null
+  );
+  const [chatAgentMode, setChatAgentMode] = useState(
+    () => (localStorage.getItem(chatStorageKey + ".agentMode") ?? "1") === "1"
+  );
+
+  // Persist across refreshes. Trim message history so localStorage doesn't
+  // balloon — the SERVER has full history; localStorage is just a cache of
+  // the last few dozen turns for instant restore.
+  useEffect(() => {
+    try {
+      const trimmed = chatMessages.slice(-80);
+      localStorage.setItem(chatStorageKey + ".messages", JSON.stringify(trimmed));
+    } catch { /* quota exceeded or private mode — ignore */ }
+  }, [chatMessages, chatStorageKey]);
+  useEffect(() => {
+    if (chatConversationId) {
+      localStorage.setItem(chatStorageKey + ".conversationId", chatConversationId);
+    } else {
+      localStorage.removeItem(chatStorageKey + ".conversationId");
+    }
+  }, [chatConversationId, chatStorageKey]);
+  useEffect(() => {
+    localStorage.setItem(chatStorageKey + ".agentMode", chatAgentMode ? "1" : "0");
+  }, [chatAgentMode, chatStorageKey]);
+
+  // Eidetic memory — server rehydration on mount.
+  //
+  // localStorage is a paint-cache; Mongo is the black box. If a conversation
+  // id survived the refresh, ask the server for the authoritative history
+  // and reconcile. If the server has more turns than local cache (e.g. the
+  // last assistant reply committed to Mongo but the browser died before
+  // localStorage flushed), we splice the missing turns back in and inject a
+  // one-shot system marker so J knows she just resumed a live thread.
+  //
+  // Runs once per (project, conversationId) — the ref key prevents re-fetch
+  // storms when the parent re-renders.
+  const rehydratedFor = useRef(null);
+  useEffect(() => {
+    if (!chatConversationId) return;
+    const key = `${project?.project_id || "_"}::${chatConversationId}`;
+    if (rehydratedFor.current === key) return;
+    rehydratedFor.current = key;
+    (async () => {
+      try {
+        const r = await getChatHistory(chatConversationId);
+        const serverMsgs = (r?.messages || [])
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role, content: m.content, meta: m.meta, ts: m.ts }));
+        if (serverMsgs.length === 0) return;
+
+        // Count real turns in local cache (skip synthetic system lines).
+        const localReal = chatMessages.filter(
+          (m) => m.role === "user" || m.role === "assistant"
+        ).length;
+        const gap = serverMsgs.length - localReal;
+        if (gap <= 0) return; // local is already at/ahead of server — nothing to do
+
+        // Server is ahead. Trust it. Rebuild the message stream:
+        // [original system boot line] + serverMsgs + [awareness marker]
+        const bootLine = chatMessages.find((m) => m.role === "system") || {
+          role: "system",
+          content: "J is online. Five Masters loaded. What needs building?",
+        };
+        setChatMessages([
+          bootLine,
+          ...serverMsgs,
+          {
+            role: "system",
+            content: `// RESUMED · ${serverMsgs.length} prior turn${serverMsgs.length === 1 ? "" : "s"} loaded from the black box. J has full context.`,
+          },
+        ]);
+      } catch (e) {
+        // Silent — this is a UX enhancement, not a correctness dependency.
+        // The server will still see the full transcript on the next turn
+        // because /ai/chat rehydrates from Mongo directly.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatConversationId, project?.project_id]);
 
   return (
     <div className="flex flex-col h-full min-w-0" data-testid="ai-coworker">
@@ -119,10 +209,13 @@ function ChatTab({
 
   // Hands-free voice loop state
   const [voiceOn, setVoiceOn] = useState(false);
-  const [voiceReply, setVoiceReply] = useState(null); // text J should speak next
+  const [voiceReply, setVoiceReply] = useState(null); // {text, key} — key changes every set so useEffect refires even when text repeats
   // Heartbeat pulse count — increments on every SSE heartbeat frame so we
   // can render "// J is thinking · 24s" while long agent turns run.
   const [pulseCount, setPulseCount] = useState(0);
+
+  // Report dialog — user-triggered bug/question/feedback flow.
+  const [reportOpen, setReportOpen] = useState(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -209,6 +302,7 @@ function ChatTab({
         });
         if (streamErr) throw streamErr;
         const r = finalResult;
+        if (!r) throw new Error("stream closed without a final result — Cloudflare edge or upstream cut the connection");
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "agent", steps: r.steps, final: r.final, done_reason: r.done_reason }]);
         onAICall?.();
@@ -231,6 +325,7 @@ function ChatTab({
         });
         if (streamErr) throw streamErr;
         const r = finalResult;
+        if (!r) throw new Error("stream closed without a final result — Cloudflare edge or upstream cut the connection");
         setConversationId(r.conversation_id);
         setMessages((prev) => [...prev, { role: "assistant", content: r.reply, meta: r.meta }]);
         onAICall?.();
@@ -262,6 +357,7 @@ function ChatTab({
 
   return (
     <div className="flex flex-col h-full">
+      <ReportDialog open={reportOpen} onClose={() => setReportOpen(false)} />
       <div ref={scrollRef} className="flex-1 overflow-auto scrollbar-thin p-3 space-y-3" data-testid="chat-messages">
         {messages.map((m, i) => (
           <ChatMessage
@@ -336,11 +432,27 @@ function ChatTab({
             onEnable={setVoiceOn}
             speakingText={voiceReply}
             onTranscript={async (text) => {
-              const reply = await send(text);
-              if (reply) setVoiceReply(reply);
+              // Fire the same streaming chat path text uses. If it fails
+              // (or returns nothing), still nudge VoiceMode to resume
+              // listening by emitting a fallback line — otherwise the mic
+              // gets stuck in "processing" and the loop stalls.
+              let reply = null;
+              try { reply = await send(text); } catch { /* send() already handled the toast */ }
+              const spoken = reply && reply.trim()
+                ? reply
+                : "// no response — check your keys, or say that again";
+              setVoiceReply({ text: spoken, key: Date.now() });
             }}
           />
         )}
+        <button
+          data-testid="open-report-dialog"
+          onClick={() => setReportOpen(true)}
+          title="Report a bug, ask a question, send feedback — pings the owner"
+          className="ml-auto mr-1 p-1 text-slate-400 hover:text-cyan-300 transition"
+        >
+          <MessageSquareWarning size={13} />
+        </button>
         <button
           data-testid="end-session-button"
           onClick={endSession}
@@ -348,7 +460,7 @@ function ChatTab({
           title={hasUserActivity
             ? "Close this conversation — J writes a chronicle narrative + (if opted in) emails you the transcript."
             : "Send at least one message before closing a session."}
-          className="ml-auto font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
+          className="font-mono text-[0.65rem] px-2 py-0.5 border border-orange/40 text-orange hover:bg-orange/10 disabled:opacity-30 disabled:cursor-not-allowed"
         >
           {ending ? "CLOSING…" : "END SESSION"}
         </button>

@@ -153,10 +153,12 @@ async def _detect_chain_exhaust(user_id: str, project_id: str) -> None:
     await _emit(
         user_id=user_id, project_id=project_id,
         kind="CHAIN_EXHAUST", severity="critical",
-        title=f"LLM chain exhausted on {doc.get('task', '?')}",
-        body=f"All {doc.get('attempts_count', '?')} providers in the {doc.get('task','?')} "
-             "chain failed. Check the /api/ai/chain view for runnable providers.",
-        action_hint="Show me the chain status and suggest which provider to reconfigure.",
+        title=f"All providers failed on {doc.get('task', '?')}",
+        body=(f"Every configured LLM provider errored on the last {doc.get('task','?')} "
+              f"request ({doc.get('attempts_count', '?')} steps tried). "
+              "Open Settings (gear icon) to check your API keys — the most common cause "
+              "is a key that expired or hit its quota."),
+        action_hint="Show me which providers failed and suggest which one to fix first.",
         key_seed=doc.get("ts", ""),
     )
 

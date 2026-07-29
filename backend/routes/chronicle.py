@@ -271,6 +271,20 @@ async def close_chat_session(
         if not email_sent:
             email_error = result.get("error")
 
+    # Session-end snapshot — auto-save the workspace to R2 on session close.
+    # Best-effort: don't fail the response if the snapshot fails; the user
+    # can always press SAVE manually.
+    snapshot_result = None
+    try:
+        from core import workspace_sync as wsync
+        from deps import project_path as _pp
+        snapshot_result = await wsync.snapshot_project(
+            db, user_id=user["user_id"], project_id=project_id,
+            src_dir=_pp(user["user_id"], project_id),
+        )
+    except Exception as e:  # noqa: BLE001
+        snapshot_result = {"ok": False, "error": str(e)}
+
     return {
         "ok": True,
         "narrative": narrative_body,
@@ -279,4 +293,5 @@ async def close_chat_session(
         "email_sent": email_sent,
         "email_error": email_error,
         "message_count": len(msgs),
+        "snapshot": snapshot_result,
     }

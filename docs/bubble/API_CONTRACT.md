@@ -289,6 +289,46 @@ Fails 400 if the model is the current champion or was promoted within the last 3
 
 ---
 
+## DPO Reviewer
+
+### `GET /api/training/dpo/review?limit=50&status=pending`
+
+> Note: `GET /api/training/dpo` (without `/review`) is a **separate JSONL export
+> endpoint** used by the training pipeline; do not confuse the two.
+
+Returns candidate preference pairs (chosen ↔ rejected) auto-stashed by
+`auto_learn_from_search`. `status` defaults to `pending`; also accepts
+`approved` or `rejected`.
+
+**Response:**
+```json
+{
+  "items": [
+    {
+      "id": "dpo_9a3f21c4b7e0",
+      "query": "How do I refactor Python list comps for empty inputs?",
+      "category": "code",
+      "status": "pending",
+      "ts": "2026-02-01T12:34:56+00:00",
+      "reject_reason": "low_relevance",
+      "chosen":   { "id": "fact_...", "title": "...", "body": "...", "url": "..." },
+      "rejected": { "title": "...", "body": "...", "url": "...", "tavily_score": 0.42 }
+    }
+  ],
+  "total": 341
+}
+```
+
+### `POST /api/training/dpo/{candidate_id}/approve`
+### `POST /api/training/dpo/{candidate_id}/reject`
+
+Idempotent. Sets `status`, `reviewed_at`, `reviewed_by`. Approved pairs are
+what the JSONL exporter will consume when building DPO datasets.
+
+**Response:** `{ "ok": true, "id": "dpo_...", "status": "approved" | "rejected" }`
+
+---
+
 ## Evaluation
 
 ### `POST /api/training/eval`
@@ -378,4 +418,4 @@ Display as `≈ $X.XX on Modal A100`. Not authoritative — actual cost is bille
 
 ## Total endpoint count
 
-**20 endpoints.** All owner-only. All return JSON. All support standard `Authorization: Bearer` header.
+**23 endpoints.** All owner-only. All return JSON. All support standard `Authorization: Bearer` header.

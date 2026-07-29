@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Warning, ArrowClockwise, ArrowLeft } from "@phosphor-icons/react";
 import { listAdminFlags, adminFlagsSummary } from "@/lib/api";
+import ReportsInbox from "@/pages/ReportsInbox";
 
 const CATEGORY_STYLES = {
   substrate_leak:    { color: "text-orange",   label: "SUBSTRATE" },
@@ -84,6 +85,8 @@ export default function AdminPanel() {
           {err}
         </div>
       )}
+
+      <ReportsInbox />
 
       {summary && (
         <section className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6"

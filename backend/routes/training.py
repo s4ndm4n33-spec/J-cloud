@@ -1,26 +1,32 @@
-"""Training platform API — endpoints consumed by the Bubble.io Training Console.
+"""Training platform API — endpoints consumed by the Training Console frontend
+(bolt.new-generated React app, previously spec'd for Bubble.io).
 
-Every route is OWNER-ONLY (403 for any non-owner user_id). Bubble treats the
-whole surface as a black-box REST API — it never sees Mongo directly.
+Every route is OWNER-ONLY (403 for any non-owner user_id). The frontend treats
+the whole surface as a black-box REST API — it never sees Mongo directly.
 
 These are the STUB implementations. Real Modal integration + JSONL exporter
 live in `backend/training/*` (to be built). For now the endpoints return
-correctly-shaped empty data so Bubble can wire the UI and integration-test
-against a live backend.
+correctly-shaped empty data so the frontend can wire the UI and
+integration-test against a live backend.
 
 See `/app/docs/bubble/API_CONTRACT.md` for the full contract.
 See `/app/docs/bubble/BACKEND_STUBS.md` for the implementation roadmap.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from deps import db, get_current_user, OWNER_USER_ID
+from training import exporter as export_mod
+from training import storage as storage_mod
 
 router = APIRouter()
 
@@ -40,15 +46,46 @@ def _now() -> str:
 
 @router.get("/training/health")
 async def training_health(user: dict = Depends(get_current_user)):
-    """Ping. Bubble calls this from `/auth` to validate the owner token."""
+    """Ping. Bubble/Bolt console call this from `/auth` to validate the
+    owner token and see which pieces of the training pipeline are wired.
+
+    Returns fields both under the legacy names AND the shorter names the
+    current bolt console expects (`version`, `storage`, `webhook`) so a
+    green ✅ shows up per-component instead of a bare `vundefined`.
+    """
     is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    version = os.environ.get("BACKEND_VERSION", "0.9.1")
+    # R2 is our storage substrate — the S3_BUCKET name is legacy from an
+    # earlier draft that never shipped. Check R2 primarily; fall back to
+    # S3_BUCKET so the field never regresses.
+    storage_ok = bool(
+        os.environ.get("R2_BUCKET")
+        and os.environ.get("R2_ACCESS_KEY_ID")
+        and os.environ.get("R2_SECRET_ACCESS_KEY")
+    ) or bool(os.environ.get("S3_BUCKET"))
+    modal_ok = bool(
+        os.environ.get("MODAL_TOKEN_ID")
+        and os.environ.get("MODAL_TOKEN_SECRET")
+    )
+    webhook_ok = bool(os.environ.get("TRAINING_WEBHOOK_SECRET"))
+    public_url = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+    training_enabled = (
+        os.environ.get("TRAINING_ENABLED", "false").lower() == "true"
+    )
     return {
         "ok": True,
         "owner": is_owner,
-        "backend_version": os.environ.get("BACKEND_VERSION", "0.9.0"),
-        "modal_configured": bool(os.environ.get("MODAL_TOKEN_ID")),
-        "storage_configured": bool(os.environ.get("S3_BUCKET")),
-        "training_enabled": (os.environ.get("TRAINING_ENABLED", "false").lower() == "true"),
+        # New / short-form field names for the bolt training console
+        "version": version,
+        "storage": storage_ok,
+        "modal": modal_ok,
+        "webhook": webhook_ok,
+        "public_backend_url": public_url,
+        "training_enabled": training_enabled,
+        # Legacy names retained for backwards compat with earlier callers
+        "backend_version": version,
+        "modal_configured": modal_ok,
+        "storage_configured": storage_ok,
     }
 
 
@@ -77,8 +114,10 @@ async def base_models(user: dict = Depends(get_current_user)):
 @router.get("/training/stats")
 async def training_stats(user: dict = Depends(get_current_user)):
     _owner_only(user)
+    # Note: chronicle_entries store `verdict` at the top level (not nested
+    # under `body`) and the passing value is "passed" (not "pass").
     verified = await db.chronicle_entries.count_documents({
-        "kind": "ai_answer", "body.verdict": "pass",
+        "kind": "ai_answer", "verdict": "passed",
     })
     # DPO candidates already stashed by J:MIND on reject
     dpo_pairs = await db.knowledge_dpo_candidates.count_documents({})
@@ -146,9 +185,78 @@ async def create_dataset(payload: dict, user: dict = Depends(get_current_user)):
     }
     await db.training_datasets.insert_one(doc)
     doc.pop("_id", None)
-    # TODO: dispatch to `backend/training/exporter.py`. For now the doc sits at
-    # `status=exporting` until the exporter worker is built.
+
+    # Fire the exporter in the background. When done it flips the row to
+    # `status=ready` (or `status=failed`).
+    filter_val = payload.get("filter", "all").lower()  # "all" | "approved"
+
+    async def _run_export():
+        try:
+            if fmt == "sft":
+                result = await export_mod.export_sft(
+                    db, dataset_id, row_limit=doc["row_limit"],
+                    date_from=doc.get("date_from"),
+                    date_to=doc.get("date_to"),
+                )
+            else:
+                result = await export_mod.export_dpo(
+                    db, dataset_id, row_limit=doc["row_limit"],
+                    only_approved=(filter_val == "approved"),
+                )
+            update: dict = {
+                "status": "ready",
+                "row_count": result["row_count"],
+                "size_mb": round(result["size_bytes"] / (1024 * 1024), 3),
+                "download_url": result["download_url"],
+                "skipped": result.get("skipped", 0),
+                "s3_key": result.get("s3_key"),
+            }
+            # If storage fell back to local, rewrite the URL to point at our
+            # self-serve endpoint (which needs auth).
+            if storage_mod.is_local_url(result["download_url"]):
+                update["download_url"] = f"/api/training/datasets/{dataset_id}/download"
+                update["storage"] = "local"
+            else:
+                update["storage"] = "r2"
+            await db.training_datasets.update_one({"id": dataset_id}, {"$set": update})
+        except Exception as e:  # noqa: BLE001
+            await db.training_datasets.update_one(
+                {"id": dataset_id},
+                {"$set": {"status": "failed", "error": str(e)[:500]}},
+            )
+
+    asyncio.create_task(_run_export())
     return doc
+
+
+@router.get("/training/datasets/{dataset_id}/download")
+async def download_dataset(dataset_id: str,
+                           user: dict = Depends(get_current_user)):
+    """Serves the JSONL file when we're on local-storage fallback (no R2).
+    Owner-only. Returns the raw JSONL as an attachment."""
+    _owner_only(user)
+    doc = await db.training_datasets.find_one({"id": dataset_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="dataset_not_found")
+    if doc.get("status") != "ready":
+        raise HTTPException(status_code=400,
+                            detail=f"dataset not ready (status={doc.get('status')})")
+    if doc.get("storage") != "local":
+        # R2 case — redirect to the presigned URL.
+        from fastapi.responses import RedirectResponse
+        if not doc.get("download_url"):
+            raise HTTPException(status_code=404, detail="no_download_url")
+        return RedirectResponse(doc["download_url"], status_code=302)
+    # Local fallback — stream from disk.
+    key = doc.get("s3_key") or f"datasets/{dataset_id}.{doc['format']}.jsonl"
+    path = storage_mod.local_path(key.replace("/", "_"))
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="file_not_found_on_disk")
+    return FileResponse(
+        path=path,
+        media_type="application/x-ndjson",
+        filename=f"{dataset_id}.{doc['format']}.jsonl",
+    )
 
 
 @router.get("/training/datasets/{dataset_id}")
@@ -183,7 +291,8 @@ async def list_runs(limit: int = Query(50, ge=1, le=200),
                     user: dict = Depends(get_current_user)):
     _owner_only(user)
     q: dict = {}
-    if status:
+    # bolt sends `status=all` for the unfiltered tab; treat that as no filter.
+    if status and status.lower() != "all":
         q["status"] = status
     docs = await db.training_runs.find(
         q, {"_id": 0, "loss_history": 0}
@@ -239,8 +348,66 @@ async def create_run(payload: dict, user: dict = Depends(get_current_user)):
     }
     await db.training_runs.insert_one(doc)
     doc.pop("_id", None)
-    # TODO: dispatch to `backend/training/modal_client.dispatch(run_id, doc)`.
-    # Modal will webhook back to update progress + final status.
+
+    # Dispatch to Modal. `smoke_test=True` in the payload runs the CPU-only
+    # verification path (~$0, ~5s) instead of the real GPU trainer.
+    from training import modal_client
+    from training import storage as storage_mod
+
+    smoke = bool(payload.get("smoke_test"))
+    webhook_url = (os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                   + "/api/training/webhook")
+    webhook_secret = os.environ.get("TRAINING_WEBHOOK_SECRET", "")
+
+    try:
+        if smoke:
+            task_id = modal_client.dispatch_smoke(
+                run_id=run_id,
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
+            )
+        else:
+            # Resolve dataset URL. If R2, use presigned; else expect a public URL.
+            if ds.get("storage") == "r2":
+                dataset_url = storage_mod.presign_get(
+                    ds["s3_key"], expires=6 * 3600)
+            else:
+                dl = ds.get("download_url") or ""
+                # Local-storage fallback returns a relative path — Modal
+                # containers need a fully-qualified URL, so prefix it.
+                if dl and not dl.startswith(("http://", "https://")):
+                    base = os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/")
+                    dl = f"{base}{dl}" if base else dl
+                dataset_url = dl
+            task_id = modal_client.dispatch(
+                run_id=run_id,
+                base_model=doc["base_model"],
+                training_method=doc["training_method"],
+                dataset_url=dataset_url,
+                lora_rank=doc["lora_rank"],
+                learning_rate=doc["learning_rate"],
+                epochs=doc["epochs"],
+                batch_size=doc["batch_size"],
+                webhook_url=webhook_url,
+                webhook_secret=webhook_secret,
+            )
+        await db.training_runs.update_one(
+            {"run_id": run_id},
+            {"$set": {"modal_task_id": task_id, "status": "running",
+                      "smoke_test": smoke}},
+        )
+        doc["modal_task_id"] = task_id
+        doc["status"] = "running"
+        doc["smoke_test"] = smoke
+    except Exception as e:  # noqa: BLE001
+        await db.training_runs.update_one(
+            {"run_id": run_id},
+            {"$set": {"status": "failed",
+                      "error": f"dispatch failed: {str(e)[:400]}"}},
+        )
+        doc["status"] = "failed"
+        doc["error"] = f"dispatch failed: {str(e)[:400]}"
+
     return doc
 
 
@@ -250,7 +417,9 @@ async def get_run(run_id: str, user: dict = Depends(get_current_user)):
     doc = await db.training_runs.find_one({"run_id": run_id}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="run_not_found")
-    return doc
+    # bolt reads the run under a `run` key; also return fields at top level
+    # for older callers.
+    return {**doc, "run": doc}
 
 
 @router.post("/training/runs/{run_id}/cancel")
@@ -261,7 +430,9 @@ async def cancel_run(run_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="run_not_found")
     if doc["status"] in {"complete", "failed", "cancelled"}:
         return {"ok": True, "run_id": run_id, "status": doc["status"]}
-    # TODO: also cancel Modal task via `modal_client.cancel(doc["modal_task_id"])`
+    if doc.get("modal_task_id"):
+        from training import modal_client
+        modal_client.cancel(doc["modal_task_id"])
     await db.training_runs.update_one(
         {"run_id": run_id},
         {"$set": {"status": "cancelled", "completed_at": _now()}},
@@ -404,6 +575,102 @@ async def delete_model(model_id: str, user: dict = Depends(get_current_user)):
             pass
     await db.training_models.delete_one({"model_id": model_id})
     return {"ok": True, "model_id": model_id}
+
+
+# ---------------------------------------------------------------------------
+# DPO candidate review (bolt.new / Training Console)
+# ---------------------------------------------------------------------------
+#
+# Every call to `auto_learn_from_search` stashes rejected Tavily results in
+# `knowledge_dpo_candidates` paired with each kept fact. The reviewer surfaces
+# those pairs so the owner can approve high-signal preference data before it
+# lands in a DPO dataset export.
+
+@router.get("/training/dpo/review")
+async def list_dpo_candidates(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None, description="pending|approved|rejected"),
+    user: dict = Depends(get_current_user),
+):
+    _owner_only(user)
+    q: dict = {}
+    if status:
+        q["status"] = status
+    else:
+        # Default view = anything not yet triaged.
+        q["status"] = {"$in": [None, "pending"]}
+    # Mongo won't match {"$in": [None, ...]} against missing keys; use $exists.
+    if status is None:
+        q = {"$or": [{"status": {"$exists": False}}, {"status": "pending"}]}
+    cursor = db.knowledge_dpo_candidates.find(q, {"_id": 0}).sort("ts", -1)
+    docs = await cursor.to_list(limit)
+    # Batch-fetch the chosen facts referenced by these candidates.
+    fact_ids = list({d["chosen_fact_id"] for d in docs if d.get("chosen_fact_id")})
+    fact_map: dict = {}
+    if fact_ids:
+        async for f in db.knowledge_facts.find(
+            {"id": {"$in": fact_ids}},
+            {"_id": 0, "id": 1, "title": 1, "body": 1, "url": 1, "category": 1},
+        ):
+            fact_map[f["id"]] = f
+    items = []
+    for d in docs:
+        chosen = fact_map.get(d.get("chosen_fact_id")) or {
+            "id": d.get("chosen_fact_id"),
+            "title": "(chosen fact deleted)",
+            "body": "",
+            "url": None,
+        }
+        items.append({
+            "id": d["id"],
+            "query": d.get("query"),
+            "category": d.get("category"),
+            "status": d.get("status") or "pending",
+            "ts": d.get("ts"),
+            "reject_reason": d.get("reject_reason"),
+            "chosen": {
+                "id": chosen.get("id"),
+                "title": chosen.get("title"),
+                "body": chosen.get("body"),
+                "url": chosen.get("url"),
+            },
+            "rejected": {
+                "title": d.get("rejected_title"),
+                "body": d.get("rejected_body"),
+                "url": d.get("rejected_url"),
+                "tavily_score": d.get("rejected_tavily_score"),
+            },
+        })
+    total = await db.knowledge_dpo_candidates.count_documents(q)
+    return {"items": items, "total": total}
+
+
+@router.post("/training/dpo/{candidate_id}/approve")
+async def approve_dpo_candidate(candidate_id: str,
+                                user: dict = Depends(get_current_user)):
+    _owner_only(user)
+    r = await db.knowledge_dpo_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "approved", "reviewed_at": _now(),
+                  "reviewed_by": user["user_id"]}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="candidate_not_found")
+    return {"ok": True, "id": candidate_id, "status": "approved"}
+
+
+@router.post("/training/dpo/{candidate_id}/reject")
+async def reject_dpo_candidate(candidate_id: str,
+                               user: dict = Depends(get_current_user)):
+    _owner_only(user)
+    r = await db.knowledge_dpo_candidates.update_one(
+        {"id": candidate_id},
+        {"$set": {"status": "rejected", "reviewed_at": _now(),
+                  "reviewed_by": user["user_id"]}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(status_code=404, detail="candidate_not_found")
+    return {"ok": True, "id": candidate_id, "status": "rejected"}
 
 
 # ---------------------------------------------------------------------------

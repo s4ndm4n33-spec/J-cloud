@@ -1,9 +1,9 @@
 import { useState, useEffect } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash } from "@phosphor-icons/react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash, FloppyDisk, ArrowClockwise } from "@phosphor-icons/react";
 import AmbientPulse from "@/components/AmbientPulse";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
-import { getPrivateMode, setPrivateMode, deleteProject } from "@/lib/api";
+import { getPrivateMode, setPrivateMode, deleteProject, snapshotProject, restoreProject, listSnapshots } from "@/lib/api";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
@@ -21,6 +21,73 @@ export default function TopBar({
   const [ollamaReady, setOllamaReady] = useState(false);
   const [pmBusy, setPmBusy] = useState(false);
   const [pmError, setPmError] = useState(null);
+  // Snapshot state — persisted per-project via listSnapshots
+  const [snapMeta, setSnapMeta] = useState(null); // {ts, bytes, hash}
+  const [snapBusy, setSnapBusy] = useState(false);
+  const [snapMsg, setSnapMsg] = useState(null);   // transient banner
+  const [savePulse, setSavePulse] = useState(0);  // key increments on every save → CSS pulse retriggers
+
+  async function refreshSnapshotMeta(projectId) {
+    if (!projectId) { setSnapMeta(null); return; }
+    try {
+      const r = await listSnapshots(projectId, 1);
+      setSnapMeta(r?.latest || null);
+    } catch { /* silent — snapshot layer is optional infra */ }
+  }
+  useEffect(() => {
+    refreshSnapshotMeta(activeProject?.project_id);
+  }, [activeProject?.project_id]);
+
+  function relTime(iso) {
+    if (!iso) return "never";
+    const ms = Date.now() - new Date(iso).getTime();
+    if (ms < 0 || Number.isNaN(ms)) return "never";
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.floor(h / 24)}d ago`;
+  }
+
+  async function handleSnapshot() {
+    if (!activeProject || snapBusy) return;
+    setSnapBusy(true); setSnapMsg(null);
+    try {
+      const r = await snapshotProject(activeProject.project_id);
+      setSnapMsg(r.unchanged ? "// nothing to save" : `// saved · ${Math.round((r.bytes || 0) / 1024)} KB`);
+      setSavePulse((n) => n + 1);
+      refreshSnapshotMeta(activeProject.project_id);
+    } catch (e) {
+      setSnapMsg(`// save failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setSnapBusy(false);
+      setTimeout(() => setSnapMsg(null), 3500);
+    }
+  }
+
+  async function handleRestore() {
+    if (!activeProject || snapBusy) return;
+    const ok = window.confirm(
+      `Restore workspace to last snapshot?\n\nThis WIPES current on-disk files and re-hydrates from the cloud snapshot taken ${relTime(snapMeta?.ts)}. Unsaved local changes will be lost.`
+    );
+    if (!ok) return;
+    setSnapBusy(true); setSnapMsg(null);
+    try {
+      const r = await restoreProject(activeProject.project_id);
+      setSnapMsg(`// restored · ${r.files} files`);
+      // Nudge the IDE to refetch its tree/state
+      window.dispatchEvent(new CustomEvent("gauntlet:workspace-restored", {
+        detail: { project_id: activeProject.project_id },
+      }));
+    } catch (e) {
+      setSnapMsg(`// restore failed: ${e?.response?.data?.detail || e.message}`);
+    } finally {
+      setSnapBusy(false);
+      setTimeout(() => setSnapMsg(null), 4500);
+    }
+  }
 
   async function refreshPrivate() {
     try {
@@ -131,6 +198,50 @@ export default function TopBar({
               >
                 <Trash size={14} weight="bold" />
               </button>
+            )}
+            {/* Workspace persistence — hybrid auto (every 5m + on session end)
+                + manual (these buttons). Users can rely on either. */}
+            {activeProject && (
+              <>
+                <span className="w-px h-4 bg-cyan/15 mx-0.5" />
+                <button
+                  data-testid="workspace-save-button"
+                  disabled={snapBusy}
+                  onClick={handleSnapshot}
+                  title={snapMeta?.ts
+                    ? `Save workspace to cloud (last saved ${relTime(snapMeta.ts)})`
+                    : "Save workspace to cloud — required to survive redeploys"}
+                  className="relative text-alloy hover:text-cyan transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <FloppyDisk size={14} weight={snapMeta?.ts ? "regular" : "fill"} />
+                  {savePulse > 0 && (
+                    <span
+                      key={savePulse}
+                      data-testid="workspace-save-pulse"
+                      aria-hidden="true"
+                      className="pointer-events-none absolute inset-0 -m-1 rounded-full save-pulse"
+                    />
+                  )}
+                </button>
+                <button
+                  data-testid="workspace-restore-button"
+                  disabled={snapBusy || !snapMeta?.ts}
+                  onClick={handleRestore}
+                  title={snapMeta?.ts
+                    ? `Restore workspace from last snapshot (${relTime(snapMeta.ts)})`
+                    : "No snapshot exists yet — press SAVE first"}
+                  className="text-alloy hover:text-amber transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <ArrowClockwise size={13} weight="bold" />
+                </button>
+                <span
+                  data-testid="workspace-last-saved"
+                  className="hidden md:inline font-mono text-[0.55rem] tracking-widest text-alloy/70 ml-1"
+                  title={snapMeta?.ts ? `last snapshot: ${snapMeta.ts}` : "never saved"}
+                >
+                  {snapMsg || (snapMeta?.ts ? `saved ${relTime(snapMeta.ts)}` : "not saved")}
+                </span>
+              </>
             )}
           </>
         )}
