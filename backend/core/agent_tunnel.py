@@ -51,11 +51,18 @@ from training import storage as r2
 
 log = logging.getLogger("agent_tunnel")
 
-# Environment-declared role. "prev" (preview pod) or "prod" (deployed pod).
-# The two Js identify each other by this. Never inferred from URL.
-ROLE = os.environ.get("AGENT_TUNNEL_ROLE", "prev").strip().lower()
-if ROLE not in {"prev", "prod"}:
-    log.warning(f"AGENT_TUNNEL_ROLE={ROLE!r} — expected 'prev' or 'prod'")
+# Environment-declared role. Auto-detected from PUBLIC_BACKEND_URL so a
+# fresh redeploy doesn't require the user to add a new env var in the
+# Emergent dashboard. Explicit AGENT_TUNNEL_ROLE overrides the detection
+# when present.
+_ROLE_OVERRIDE = os.environ.get("AGENT_TUNNEL_ROLE", "").strip().lower()
+_BACKEND_URL = os.environ.get("PUBLIC_BACKEND_URL", "").strip().lower()
+
+if _ROLE_OVERRIDE in {"prev", "prod"}:
+    ROLE = _ROLE_OVERRIDE
+elif "blue-j-gauntlet.com" in _BACKEND_URL:
+    ROLE = "prod"
+else:
     ROLE = "prev"
 
 _SELF = f"{ROLE}-j"                                  # e.g. "prev-j" or "prod-j"
