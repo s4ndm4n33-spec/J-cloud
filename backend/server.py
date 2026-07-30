@@ -74,6 +74,47 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup():
+    # ------------------------------------------------------------------
+    # Runtime git install fallback.
+    #
+    # /app/.emergent/system_deps.txt is the DECLARED path for OS packages,
+    # but an Emergent platform auto-commit is currently reverting any
+    # addition beyond `cron=3.0pl1-162` (verified — commits b6c81aa/5e9c06d
+    # stripped `git=1:2.39.5-0+deb12u3` immediately after we added it).
+    # Until Emergent Support un-locks the manifest, we self-install at
+    # boot. GitPython + our agent_tunnel apply_diff both need the binary.
+    # Idempotent: if `git` is already on PATH we skip the apt call.
+    # ------------------------------------------------------------------
+    try:
+        import shutil, subprocess  # local import — keeps top-of-file tidy
+        if shutil.which("git"):
+            log.info(f"git present: {shutil.which('git')}")
+        else:
+            log.warning("git missing at startup — attempting runtime install")
+            def _try_install(extra_args: list[str]) -> tuple[int, str]:
+                r = subprocess.run(
+                    ["apt-get", "install", "-y", "--no-install-recommends", *extra_args, "git"],
+                    capture_output=True, text=True, timeout=90,
+                )
+                return r.returncode, (r.stderr or "")
+
+            rc, err = _try_install([])
+            if rc != 0 or not shutil.which("git"):
+                # Refresh package lists and retry once.
+                subprocess.run(["apt-get", "update", "-y"], capture_output=True, timeout=60)
+                rc, err = _try_install([])
+            if not shutil.which("git"):
+                # apt reports success but binary isn't there — try --reinstall.
+                rc, err = _try_install(["--reinstall"])
+            if shutil.which("git"):
+                log.info(f"git installed at runtime: {shutil.which('git')}")
+            else:
+                log.error(f"git runtime install FAILED (rc={rc}): {err[:500]} "
+                          f"— GitPython + apply_diff will not work until "
+                          f"Emergent Support restores the manifest")
+    except Exception as e:
+        log.warning(f"git runtime install path errored: {e}")
+
     try:
         await chron.ensure_indexes(db)
     except Exception as e:
