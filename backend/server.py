@@ -26,7 +26,8 @@ from core import chronicle as chron
 from core import ambient
 from core.ratelimit import set_owner_id as _set_rl_owner
 from routes import (
-    admin, agents, ai, ambient as ambient_routes, audit, auth, chronicle,
+    admin, agent_tunnel as agent_tunnel_routes, agents, ai,
+    ambient as ambient_routes, audit, auth, chronicle,
     gauntlet, git_local, github, knowledge, projects, reports, settings, terminal,
     training, training_webhooks, uploads, voice,
 )
@@ -44,6 +45,7 @@ for module in (
     auth, projects, gauntlet, terminal, git_local, settings,
     chronicle, ai, github, audit, uploads, agents, ambient_routes, voice,
     knowledge, admin, training, training_webhooks, reports,
+    agent_tunnel_routes,
 ):
     api.include_router(module.router)
 
@@ -107,6 +109,14 @@ async def _startup():
         wsync.sync_loop.start(db, _pp, interval_sec=300)
     except Exception as e:
         log.warning(f"workspace-sync bootstrap failed: {e}")
+    # Agent tunnel — cross-pod ticket bus (prev-J <-> prod-J via R2).
+    # Sync loop polls R2 every 30s and upserts new tickets into local Mongo.
+    try:
+        from core import agent_tunnel as at
+        await at.ensure_indexes(db)
+        at.tunnel_sync.start(db, interval_sec=30)
+    except Exception as e:
+        log.warning(f"agent-tunnel bootstrap failed: {e}")
     # Boot the ambient-awareness detector
     ambient.start()
 
@@ -117,6 +127,11 @@ async def _shutdown():
     try:
         from core import workspace_sync as wsync
         wsync.sync_loop.stop()
+    except Exception:
+        pass
+    try:
+        from core import agent_tunnel as at
+        at.tunnel_sync.stop()
     except Exception:
         pass
     client.close()

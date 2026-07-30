@@ -19,6 +19,35 @@
 - **Destructive interlock** (`core/destructive.py`): regex bank for 18+ destructive patterns (`rm -rf /`, fork bombs, `mkfs`, `dd if=...of=/dev/`, raw `DROP DATABASE`, `git push --force main`, `shutil.rmtree`, etc.). Critical matches HARD-BLOCK terminal exec with HTTP 423 until a consume-once override token is obtained via password.
 - **J persona** (`core/persona.py`): the B.L.U.E.-J. directive — witty, sardonic, kind, capable. Injected as system prompt into every LLM call (chat/refine/governance).
 
+## Shipped (2026-02) — Agent Tunnel (prev-J ↔ prod-J)
+
+Ticket bus that lets the two J deployments hand fixes back and forth via R2 as substrate. Human still gates deploys.
+
+**Files**
+- `core/agent_tunnel.py` — R2-backed ticket store, sync loop (30s), guarded `apply_diff` (size cap + path denylist + optional pytest)
+- `routes/agent_tunnel.py` — owner-scoped HTTP API (whoami, list, open, reply, status, escalate, apply, sync)
+- `core/tools.py` — new J tools: `tunnel_open`, `tunnel_inbox`, `tunnel_reply`, `tunnel_status`
+
+**Ticket schema**: `{ticket_id, from, to, kind, title, body, code_diff, files_touched, status, parent_ticket_id, priority, ts, updated_ts, history, escalate}`. Statuses: `open → in_progress → ready_for_deploy → deployed | rejected`.
+
+**Guardrails on `apply_diff` (prev-J only)**
+- Diff size cap: 200 LOC (escalates above)
+- Path denylist: `.emergent/`, `.env*`, `*.pem/key/crt`, `backend/deps.py`, `.git/`, `node_modules/`, `workspaces/`
+- git must be present
+- `git apply --check` dry-run before real apply; failures escalate
+- On failure: auto-revert + escalate flag (only human can clear)
+- J cannot self-mark `ready_for_deploy` or `deployed` via any tool
+- Tests default OFF (`run_tests=false`) in preview due to uvicorn --reload race; ON in prod
+
+**Cross-pod transport**: R2 at `s3://{R2_BUCKET}/tunnel/tickets/{ticket_id}.json`. Both pods poll every 30s, upsert by `updated_ts`. Last-write-wins.
+
+**Env**: `AGENT_TUNNEL_ROLE=prev` in preview .env; prod pod needs `AGENT_TUNNEL_ROLE=prod`.
+
+**Known limitation**: in preview, uvicorn `--reload` kills the in-flight request when apply_diff writes to `/app/backend/`. Not present in prod. Documented in the module docstring.
+
+**E2E verified**: whoami/list/open/reply/R2-sync round-trip green in preview. 15 pre-existing scoping/stream/eidetic tests still pass.
+
+
 ## Fixed & Shipped (2026-02-XX) — Multi-tenant compartmentalization
 
 ### J:MIND per-user scoping (leak sealed)
