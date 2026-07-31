@@ -6,6 +6,7 @@ import {
   getTutorialState,
 } from "@/lib/api";
 import TopBar from "@/components/TopBar";
+import SystemNoticeBanner from "@/components/SystemNoticeBanner";
 import LeftRail from "@/components/LeftRail";
 import FileTree from "@/components/FileTree";
 import EditorPane from "@/components/EditorPane";
@@ -209,6 +210,7 @@ export default function IDE() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-midnight text-gridwhite overflow-hidden">
+      <SystemNoticeBanner />
       <TopBar
         user={user}
         projects={projects}

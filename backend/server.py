@@ -28,7 +28,8 @@ from core.ratelimit import set_owner_id as _set_rl_owner
 from routes import (
     admin, agent_tunnel as agent_tunnel_routes, agents, ai,
     ambient as ambient_routes, audit, auth, chronicle,
-    gauntlet, git_local, github, knowledge, projects, reports, settings, terminal,
+    gauntlet, git_local, github, knowledge, projects, reports, settings,
+    system_notice, terminal,
     training, training_webhooks, uploads, voice,
 )
 
@@ -45,7 +46,7 @@ for module in (
     auth, projects, gauntlet, terminal, git_local, settings,
     chronicle, ai, github, audit, uploads, agents, ambient_routes, voice,
     knowledge, admin, training, training_webhooks, reports,
-    agent_tunnel_routes,
+    agent_tunnel_routes, system_notice,
 ):
     api.include_router(module.router)
 

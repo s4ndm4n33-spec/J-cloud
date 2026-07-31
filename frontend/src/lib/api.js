@@ -71,6 +71,18 @@ export async function deleteProject(project_id) {
   return (await client.delete(`/projects/${project_id}`)).data;
 }
 
+// ----- System notice / downtime banner (public GET, owner POST/DELETE) -----
+export async function getSystemNotice() {
+  // Public — but we still route via `client` so it picks up the base URL.
+  return (await client.get("/system-notice", { headers: {} })).data;
+}
+export async function setSystemNotice(payload) {
+  return (await client.post("/admin/system-notice", payload)).data;
+}
+export async function clearSystemNotice() {
+  return (await client.delete("/admin/system-notice")).data;
+}
+
 // ----- Chat history (server-side rehydration; source of truth) -----
 export async function getChatHistory(conversation_id) {
   return (await client.get("/ai/chat/history",
