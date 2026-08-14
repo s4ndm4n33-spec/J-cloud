@@ -4,6 +4,16 @@ import axios from "axios";
 import { getEmailPrefs, setEmailPrefs } from "@/lib/api";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
+// Placeholder hints per provider — these are just examples the user can override.
+// Any valid model slug on that provider's `/models` list works (including
+// custom fine-tunes on OpenRouter/OpenAI).
+const MODEL_HINTS = {
+  openai:     "gpt-5.4-mini",
+  anthropic:  "claude-haiku-4-5-20251001",
+  gemini:     "gemini-3-flash-preview",
+  groq:       "llama-3.3-70b-versatile",
+  openrouter: "meta-llama/llama-3.3-70b-instruct",
+};
 const PROVIDER_META = {
   openai:     { label: "OpenAI",        note: "Powers GPT-5.2 refinement",           url: "https://platform.openai.com/api-keys" },
   anthropic:  { label: "Anthropic",     note: "Powers Claude Sonnet 4.5 governance", url: "https://console.anthropic.com/settings/keys" },
@@ -24,6 +34,7 @@ export default function SettingsModal({ onClose }) {
   const [ollamaTest, setOllamaTest] = useState(null); // {ok, models[], backend, error}
   const [busy, setBusy] = useState(null);
   const [toast, setToast] = useState(null);
+  const [modelDrafts, setModelDrafts] = useState({}); // per-provider preferred model draft
   const [email, setEmail] = useState({ enabled: false, address: "", resend_configured: false });
 
   async function refresh() {
@@ -37,6 +48,12 @@ export default function SettingsModal({ onClose }) {
     setPresets(keysResp.data.ollama_presets || {});
     setChains(chainResp.data.chains);
     setEmail(emailResp);
+    // Seed the model drafts from what's persisted so the input reflects saved state.
+    const seeds = {};
+    for (const p of keysResp.data.providers) {
+      if (p.provider !== "ollama") seeds[p.provider] = p.preferred_model || "";
+    }
+    setModelDrafts(seeds);
     const ol = keysResp.data.providers.find((p) => p.provider === "ollama");
     if (ol && ol.configured) {
       setOllamaDraft({ base_url: ol.base_url || "", default_model: ol.default_model || "" });
@@ -51,10 +68,30 @@ export default function SettingsModal({ onClose }) {
     if (!api_key) return;
     setBusy(provider);
     try {
-      await axios.put(`${API}/settings/keys`, { provider, api_key }, { withCredentials: true });
+      const preferred_model = (modelDrafts[provider] || "").trim();
+      await axios.put(`${API}/settings/keys`,
+        { provider, api_key, preferred_model },
+        { withCredentials: true });
       setDrafts((d) => ({ ...d, [provider]: "" }));
       await refresh();
       flash(`${PROVIDER_META[provider].label} key saved`);
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Save failed");
+    } finally { setBusy(null); }
+  }
+
+  async function saveModel(provider) {
+    // Update just the preferred model — no key re-paste needed. Empty clears.
+    const preferred_model = (modelDrafts[provider] || "").trim();
+    setBusy(`model-${provider}`);
+    try {
+      await axios.put(`${API}/settings/keys`,
+        { provider, preferred_model },
+        { withCredentials: true });
+      await refresh();
+      flash(preferred_model
+        ? `${PROVIDER_META[provider].label} model → ${preferred_model}`
+        : `${PROVIDER_META[provider].label} model cleared`);
     } catch (e) {
       flash(e?.response?.data?.detail || "Save failed");
     } finally { setBusy(null); }
@@ -195,6 +232,32 @@ export default function SettingsModal({ onClose }) {
                     SAVE
                   </button>
                 </div>
+                {/* Preferred model — overrides the chain default for this provider.
+                    Only shown once a key is on file. Blank clears. */}
+                {p.configured ? (
+                  <div className="flex gap-2 mt-2" data-testid={`provider-${p.provider}-model-row`}>
+                    <input
+                      type="text"
+                      placeholder={`preferred model (default: ${MODEL_HINTS[p.provider] || "chain default"})`}
+                      value={modelDrafts[p.provider] || ""}
+                      onChange={(e) => setModelDrafts((d) => ({ ...d, [p.provider]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === "Enter") saveModel(p.provider); }}
+                      className="flex-1 bg-steel border border-cyan/15 px-2 py-1.5 font-mono text-[0.7rem] text-gridwhite"
+                      data-testid={`provider-${p.provider}-model-input`}
+                    />
+                    <button
+                      onClick={() => saveModel(p.provider)}
+                      disabled={busy === `model-${p.provider}` ||
+                                (modelDrafts[p.provider] || "").trim() === (p.preferred_model || "")}
+                      className="btn-solid text-[0.65rem]"
+                      title="Save preferred model (blank to clear)"
+                      data-testid={`provider-${p.provider}-model-save`}
+                    >
+                      {busy === `model-${p.provider}` ? <CircleNotch size={12} className="animate-spin" /> : null}
+                      MODEL
+                    </button>
+                  </div>
+                ) : null}
                 <a
                   href={meta.url}
                   target="_blank"
