@@ -73,27 +73,58 @@ async def _byok_meta(user_id: str, provider: str) -> dict:
 # Ollama model "user-default" means: use whatever default_model the user saved.
 TASK_CHAINS: dict[str, list[tuple[str, str, str]]] = {
     "chat": [
-        ("universal", "gemini",    "gemini-3-flash-preview"),
-        ("byok",      "gemini",    "gemini-3-flash-preview"),
-        ("byok",      "openai",    "gpt-5.4-mini"),
-        ("byok",      "anthropic", "claude-haiku-4-5-20251001"),
-        ("byok",      "ollama",    "user-default"),
+        ("universal", "gemini",     "gemini-3-flash-preview"),
+        ("byok",      "gemini",     "gemini-3-flash-preview"),
+        ("byok",      "openai",     "gpt-5.4-mini"),
+        ("byok",      "anthropic",  "claude-haiku-4-5-20251001"),
+        ("byok",      "groq",       "llama-3.3-70b-versatile"),
+        ("byok",      "openrouter", "meta-llama/llama-3.3-70b-instruct"),
+        ("byok",      "ollama",     "user-default"),
     ],
     "refine": [
-        ("universal", "openai",    "gpt-5.2"),
-        ("byok",      "openai",    "gpt-5.2"),
-        ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
-        ("byok",      "gemini",    "gemini-3-flash-preview"),
-        ("byok",      "ollama",    "user-default"),
+        ("universal", "openai",     "gpt-5.2"),
+        ("byok",      "openai",     "gpt-5.2"),
+        ("byok",      "anthropic",  "claude-sonnet-4-5-20250929"),
+        ("byok",      "gemini",     "gemini-3-flash-preview"),
+        ("byok",      "groq",       "llama-3.3-70b-versatile"),
+        ("byok",      "openrouter", "anthropic/claude-sonnet-4"),
+        ("byok",      "ollama",     "user-default"),
     ],
     "governance": [
-        ("universal", "anthropic", "claude-sonnet-4-5-20250929"),
-        ("byok",      "anthropic", "claude-sonnet-4-5-20250929"),
-        ("byok",      "openai",    "gpt-5.4"),
-        ("byok",      "gemini",    "gemini-3.1-pro-preview"),
-        ("byok",      "ollama",    "user-default"),
+        ("universal", "anthropic",  "claude-sonnet-4-5-20250929"),
+        ("byok",      "anthropic",  "claude-sonnet-4-5-20250929"),
+        ("byok",      "openai",     "gpt-5.4"),
+        ("byok",      "gemini",     "gemini-3.1-pro-preview"),
+        ("byok",      "groq",       "llama-3.3-70b-versatile"),
+        ("byok",      "openrouter", "anthropic/claude-sonnet-4"),
+        ("byok",      "ollama",     "user-default"),
     ],
 }
+
+
+# OpenAI-compatible providers — same request/response shape as `openai` SDK,
+# just a different base_url. Groq (LPU-accelerated), OpenRouter (300+ upstreams),
+# and anything else compat we add later go here.
+_OAI_COMPAT_BASE_URLS = {
+    "groq":       "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+}
+
+
+async def _call_oai_compat(base_url: str, api_key: str, model: str,
+                           system: str, user_text: str) -> str:
+    """Call any OpenAI-compat provider (Groq, OpenRouter, ...)."""
+    from openai import AsyncOpenAI
+    client_ai = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=90.0)
+    resp = await client_ai.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_text},
+        ],
+        temperature=0.4,
+    )
+    return resp.choices[0].message.content or ""
 
 
 async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
@@ -122,6 +153,15 @@ async def _single_call(api_key_or_cfg: Any, provider: str, model: str,
         if not chosen_model:
             raise RuntimeError("Ollama default model not configured")
         return await _call_ollama(cfg["base_url"], chosen_model, system, user_text)
+
+    # OpenAI-compat providers (Groq, OpenRouter) — same wire protocol as
+    # OpenAI, just a different base_url. Kept out of emergentintegrations
+    # so we don't need SDK support for every new upstream.
+    if provider in _OAI_COMPAT_BASE_URLS:
+        return await _call_oai_compat(
+            _OAI_COMPAT_BASE_URLS[provider],
+            api_key_or_cfg, model, system, user_text,
+        )
 
     from emergentintegrations.llm.chat import LlmChat, UserMessage
     chat = LlmChat(

@@ -5,10 +5,12 @@ import { getEmailPrefs, setEmailPrefs } from "@/lib/api";
 
 const API = process.env.REACT_APP_BACKEND_URL + "/api";
 const PROVIDER_META = {
-  openai:    { label: "OpenAI",        note: "Powers GPT-5.2 refinement",          url: "https://platform.openai.com/api-keys" },
-  anthropic: { label: "Anthropic",     note: "Powers Claude Sonnet 4.5 governance", url: "https://console.anthropic.com/settings/keys" },
-  gemini:    { label: "Google Gemini", note: "Powers Gemini chat",                  url: "https://aistudio.google.com/app/apikey" },
-  ollama:    { label: "Local server (Ollama / llama.cpp)", note: "Self-hosted, OpenAI-compat. Last in the failover chain — runs only when cloud providers fail.", url: "https://ollama.com" },
+  openai:     { label: "OpenAI",        note: "Powers GPT-5.2 refinement",           url: "https://platform.openai.com/api-keys" },
+  anthropic:  { label: "Anthropic",     note: "Powers Claude Sonnet 4.5 governance", url: "https://console.anthropic.com/settings/keys" },
+  gemini:     { label: "Google Gemini", note: "Powers Gemini chat",                  url: "https://aistudio.google.com/app/apikey" },
+  groq:       { label: "Groq",          note: "Free tier, no credit card. LPU-accelerated Llama 3.3 — ~10× faster than GPT.", url: "https://console.groq.com/keys" },
+  openrouter: { label: "OpenRouter",    note: "One key, 300+ models. Insulates you from any single upstream EOL.", url: "https://openrouter.ai/settings/keys" },
+  ollama:     { label: "Local server (Ollama / llama.cpp)", note: "Self-hosted, OpenAI-compat. Last in the failover chain — runs only when cloud providers fail.", url: "https://ollama.com" },
 };
 const TASK_LABEL = { chat: "Chat", refine: "Refine", governance: "Gauntlet" };
 

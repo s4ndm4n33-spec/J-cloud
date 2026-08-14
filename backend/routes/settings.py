@@ -59,7 +59,7 @@ async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
     """
     provider = (payload.get("provider") or "").strip().lower()
     api_key = (payload.get("api_key") or "").strip()
-    if provider not in {"openai", "anthropic", "gemini"}:
+    if provider not in {"openai", "anthropic", "gemini", "groq", "openrouter"}:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if not api_key or len(api_key) < 12:
         return {"ok": False, "provider": provider,
@@ -121,6 +121,36 @@ async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
                             "message": "Google rejected the key. Check the AI Studio key page for status."}
                 return {"ok": False, "provider": provider,
                         "message": f"Gemini returned HTTP {r.status_code}."}
+
+            if provider == "groq":
+                # Groq is OpenAI-compatible — /v1/models works with a bearer.
+                r = await http.get("https://api.groq.com/openai/v1/models",
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                if r.status_code == 200:
+                    ids = [m.get("id", "") for m in r.json().get("data", [])][:5]
+                    return {"ok": True, "provider": provider,
+                            "message": f"Groq live. {len(ids)}+ models visible.",
+                            "models": ids}
+                if r.status_code in (401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "Groq rejected the key. Check console.groq.com/keys."}
+                return {"ok": False, "provider": provider,
+                        "message": f"Groq returned HTTP {r.status_code}."}
+
+            if provider == "openrouter":
+                r = await http.get("https://openrouter.ai/api/v1/auth/key",
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                if r.status_code == 200:
+                    data = r.json().get("data", {})
+                    remain = data.get("limit_remaining")
+                    remain_note = f" · ${remain} remaining" if remain is not None else ""
+                    return {"ok": True, "provider": provider,
+                            "message": f"OpenRouter live{remain_note}."}
+                if r.status_code in (401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "OpenRouter rejected the key. Check openrouter.ai/settings/keys."}
+                return {"ok": False, "provider": provider,
+                        "message": f"OpenRouter returned HTTP {r.status_code}."}
         except httpx.HTTPError as e:
             return {"ok": False, "provider": provider,
                     "message": f"Network error reaching {provider}: {e}"}
