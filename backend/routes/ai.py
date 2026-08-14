@@ -278,6 +278,7 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
             "verdict": "passed" if reply and not reply.startswith("// J:OFFLINE") else "offline",
             "context_present": bool(ctx_parts),
             "ts": datetime.now(timezone.utc).isoformat(),
+            "ts_ns": time.time_ns(),  # unique-index dedup key on (project, session, ts_ns)
             "signer": "J",
         })
     except Exception as e:
@@ -881,6 +882,7 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
             "steps_taken": len(steps),
             "tool_names": [s.get("tool") for s in steps if s.get("tool")][:20],
             "ts": datetime.now(timezone.utc).isoformat(),
+            "ts_ns": time.time_ns(),  # unique-index dedup key on (project, session, ts_ns)
             "signer": "J",
         })
     except Exception as e:
