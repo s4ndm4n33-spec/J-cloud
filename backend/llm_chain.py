@@ -12,6 +12,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from openai import AsyncOpenAI  # used by Ollama + all OAI-compat providers (Groq, OpenRouter)
+
 from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
 from core.keyvault import decrypt_key
 
@@ -114,7 +116,6 @@ _OAI_COMPAT_BASE_URLS = {
 async def _call_oai_compat(base_url: str, api_key: str, model: str,
                            system: str, user_text: str) -> str:
     """Call any OpenAI-compat provider (Groq, OpenRouter, ...)."""
-    from openai import AsyncOpenAI
     client_ai = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=90.0)
     resp = await client_ai.chat.completions.create(
         model=model,
@@ -129,7 +130,6 @@ async def _call_oai_compat(base_url: str, api_key: str, model: str,
 
 async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
     """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM)."""
-    from openai import AsyncOpenAI
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
