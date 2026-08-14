@@ -24,7 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from deps import db, get_current_user, OWNER_USER_ID
+from deps import db, prod_db, get_current_user, OWNER_USER_ID
 from training import exporter as export_mod
 from training import storage as storage_mod
 
@@ -192,15 +192,19 @@ async def create_dataset(payload: dict, user: dict = Depends(get_current_user)):
 
     async def _run_export():
         try:
+            # Read training signal from prod when configured, so datasets
+            # generated in preview still contain real user chronicle rows.
+            src_db = prod_db
+            src_label = "prod" if src_db is not db else "preview"
             if fmt == "sft":
                 result = await export_mod.export_sft(
-                    db, dataset_id, row_limit=doc["row_limit"],
+                    src_db, dataset_id, row_limit=doc["row_limit"],
                     date_from=doc.get("date_from"),
                     date_to=doc.get("date_to"),
                 )
             else:
                 result = await export_mod.export_dpo(
-                    db, dataset_id, row_limit=doc["row_limit"],
+                    src_db, dataset_id, row_limit=doc["row_limit"],
                     only_approved=(filter_val == "approved"),
                 )
             update: dict = {
@@ -210,6 +214,7 @@ async def create_dataset(payload: dict, user: dict = Depends(get_current_user)):
                 "download_url": result["download_url"],
                 "skipped": result.get("skipped", 0),
                 "s3_key": result.get("s3_key"),
+                "source": src_label,
             }
             # If storage fell back to local, rewrite the URL to point at our
             # self-serve endpoint (which needs auth).

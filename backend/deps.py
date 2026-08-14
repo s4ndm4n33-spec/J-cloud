@@ -32,6 +32,18 @@ WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
+# Optional: a read-only handle to the production Mongo. When set, the training
+# exporter reads chronicle/dpo rows from *here* instead of the local preview DB
+# so datasets always contain real user signal. Falls back to `db` when unset,
+# which keeps local/dev usage frictionless.
+_PROD_MONGO_URL = os.environ.get("PROD_MONGO_URL", "").strip()
+_PROD_DB_NAME = os.environ.get("PROD_DB_NAME", "").strip() or DB_NAME
+if _PROD_MONGO_URL:
+    _prod_client = AsyncIOMotorClient(_PROD_MONGO_URL)
+    prod_db = _prod_client[_PROD_DB_NAME]
+else:
+    prod_db = db
+
 log = logging.getLogger("gauntlet")
 
 
