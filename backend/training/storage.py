@@ -1,7 +1,6 @@
 """Object storage adapter.
 
-Primary target: Cloudflare R2 (S3-compatible). Falls back to local disk under
-`/app/backend/training/exports/` when R2 env vars are unset — so the exporter
+Primary target: Cloudflare R2 (S3-compatible). Falls back to local disk under the configured shard-local training export root when R2 env vars are unset — so the exporter
 works out-of-the-box in dev without external credentials. The `.url` returned
 in fallback mode points at our own backend, which streams the file via
 `GET /api/training/datasets/{id}/download`.
@@ -12,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from config import settings
+
 # --- Configuration ----------------------------------------------------------
 
 R2_ACCOUNT_ID   = os.environ.get("R2_ACCOUNT_ID", "").strip()
@@ -20,7 +21,7 @@ R2_SECRET_KEY   = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
 R2_BUCKET       = os.environ.get("R2_BUCKET", "").strip()
 R2_PUBLIC_URL   = os.environ.get("R2_PUBLIC_URL", "").strip()  # optional public.r2.dev URL
 
-LOCAL_ROOT = Path(os.environ.get("TRAINING_LOCAL_ROOT", "/app/backend/training/exports"))
+LOCAL_ROOT = settings.training_local_root
 LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Public backend URL used to build fallback URLs. Same env var the webhook
@@ -116,7 +117,7 @@ def delete_key(key: str) -> bool:
         try:
             _r2_client().delete_object(Bucket=R2_BUCKET, Key=key)
             return True
-        except Exception:
+        except RuntimeError:
             return False
     path = LOCAL_ROOT / key.replace("/", "_")
     if path.exists():

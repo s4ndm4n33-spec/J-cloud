@@ -24,6 +24,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
+from capabilities import require_capability
+from config import settings
 from deps import db, get_current_user, OWNER_USER_ID
 from training import exporter as export_mod
 from training import storage as storage_mod
@@ -58,12 +60,14 @@ async def training_health(user: dict = Depends(get_current_user)):
     # R2 is our storage substrate — the S3_BUCKET name is legacy from an
     # earlier draft that never shipped. Check R2 primarily; fall back to
     # S3_BUCKET so the field never regresses.
-    storage_ok = bool(
-        os.environ.get("R2_BUCKET")
-        and os.environ.get("R2_ACCESS_KEY_ID")
-        and os.environ.get("R2_SECRET_ACCESS_KEY")
-    ) or bool(os.environ.get("S3_BUCKET"))
-    modal_ok = bool(
+    storage_ok = False if settings.portable else (
+        bool(
+            os.environ.get("R2_BUCKET")
+            and os.environ.get("R2_ACCESS_KEY_ID")
+            and os.environ.get("R2_SECRET_ACCESS_KEY")
+        ) or bool(os.environ.get("S3_BUCKET"))
+    )
+    modal_ok = False if settings.portable else bool(
         os.environ.get("MODAL_TOKEN_ID")
         and os.environ.get("MODAL_TOKEN_SECRET")
     )
@@ -304,6 +308,7 @@ async def list_runs(limit: int = Query(50, ge=1, le=200),
 @router.post("/training/runs")
 async def create_run(payload: dict, user: dict = Depends(get_current_user)):
     _owner_only(user)
+    require_capability("modal")
     dataset_id = payload.get("dataset_id")
     if not dataset_id:
         raise HTTPException(status_code=400, detail="dataset_id required")
@@ -431,6 +436,7 @@ async def cancel_run(run_id: str, user: dict = Depends(get_current_user)):
     if doc["status"] in {"complete", "failed", "cancelled"}:
         return {"ok": True, "run_id": run_id, "status": doc["status"]}
     if doc.get("modal_task_id"):
+        require_capability("modal")
         from training import modal_client
         modal_client.cancel(doc["modal_task_id"])
     await db.training_runs.update_one(
@@ -511,7 +517,7 @@ async def _promote_model_by_id(model_id: str) -> dict:
         "model_id": model_id,
         "ts": _now(),
     })
-    # TODO: reload llm_chain TASK_CHAINS so runtime chain sees the new head.
+    # Pending: reload llm_chain TASK_CHAINS so runtime chain sees the new head.
     return {
         "ok": True,
         "new_champion": model_id,
@@ -698,7 +704,7 @@ async def create_eval(payload: dict, user: dict = Depends(get_current_user)):
     }
     await db.training_evals.insert_one(doc)
     doc.pop("_id", None)
-    # TODO: dispatch to `backend/training/eval_runner.run(eval_id)`. The runner
+    # Pending: dispatch to `backend/training/eval_runner.run(eval_id)`. The runner
     # reads `backend/tests/eval/golden.jsonl`, sends each prompt through both
     # models, runs Five Masters on each response, computes deltas, and updates
     # the doc via poll-friendly writes.

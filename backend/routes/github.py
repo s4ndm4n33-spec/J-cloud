@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from capabilities import require_capability
 from deps import db, get_current_user, log, project_path, user_root
 from core.github_api import (
     GitHubError, create_repo, git_clone, git_current_branch, git_pull, git_push,
@@ -45,6 +46,7 @@ async def github_auth_status(user: dict = Depends(get_current_user)):
 
 @router.post("/github/auth")
 async def github_auth_pat(payload: dict, user: dict = Depends(get_current_user)):
+    require_capability("github")
     token = (payload.get("token") or "").strip()
     if not token or len(token) < 20:
         raise HTTPException(status_code=400, detail="Invalid GitHub token")
@@ -77,6 +79,7 @@ async def github_auth_delete(user: dict = Depends(get_current_user)):
 
 @router.get("/github/repos")
 async def github_repos(page: int = 1, user: dict = Depends(get_current_user)):
+    require_capability("github")
     token = await _resolve_github_token(user["user_id"])
     if not token:
         raise HTTPException(status_code=401, detail="GitHub not connected")
@@ -89,6 +92,7 @@ async def github_repos(page: int = 1, user: dict = Depends(get_current_user)):
 
 @router.post("/github/clone")
 async def github_clone_repo(payload: dict, user: dict = Depends(get_current_user)):
+    require_capability("github")
     """Clone a GitHub repo as a NEW workspace project."""
     token = await _resolve_github_token(user["user_id"])
     if not token:
@@ -120,6 +124,7 @@ async def github_clone_repo(payload: dict, user: dict = Depends(get_current_user
 @router.post("/projects/{project_id}/github/create")
 async def github_create_for_project(project_id: str, payload: dict,
                                     user: dict = Depends(get_current_user)):
+    require_capability("github")
     """Create a NEW GitHub repo and push the current workspace to it."""
     token = await _resolve_github_token(user["user_id"])
     if not token:
@@ -167,6 +172,7 @@ async def github_link(project_id: str, payload: dict, user: dict = Depends(get_c
 
 @router.post("/projects/{project_id}/github/push")
 async def github_push(project_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    require_capability("github")
     token = await _resolve_github_token(user["user_id"])
     if not token:
         raise HTTPException(status_code=401, detail="GitHub not connected")
@@ -178,6 +184,7 @@ async def github_push(project_id: str, payload: dict, user: dict = Depends(get_c
 
 @router.post("/projects/{project_id}/github/pull")
 async def github_pull(project_id: str, payload: dict, user: dict = Depends(get_current_user)):
+    require_capability("github")
     token = await _resolve_github_token(user["user_id"])
     if not token:
         raise HTTPException(status_code=401, detail="GitHub not connected")
@@ -190,6 +197,7 @@ async def github_pull(project_id: str, payload: dict, user: dict = Depends(get_c
 @router.post("/projects/{project_id}/github/pr")
 async def github_pull_request(project_id: str, payload: dict,
                               user: dict = Depends(get_current_user)):
+    require_capability("github")
     token = await _resolve_github_token(user["user_id"])
     if not token:
         raise HTTPException(status_code=401, detail="GitHub not connected")

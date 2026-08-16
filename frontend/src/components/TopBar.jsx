@@ -5,9 +5,6 @@ import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
 import { getPrivateMode, setPrivateMode, deleteProject, snapshotProject, restoreProject, listSnapshots } from "@/lib/api";
 
-const LOGO_URL =
-  "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
-
 export default function TopBar({
   user, projects, activeProject, onProjectChange, onNewProject,
   gauntletStatus, previewOpen, onTogglePreview, onOpenTutorial,
@@ -125,7 +122,7 @@ export default function TopBar({
   return (
     <div className="h-12 border-b border-cyan/10 bg-midnight/90 flex items-center px-2 sm:px-3 gap-2 sm:gap-4 relative z-30" data-testid="top-bar">
       <div className="flex items-center gap-2">
-        <img src={LOGO_URL} alt="Sovereign Shards" className="h-6 w-6" />
+        <div className="h-6 w-6 border border-cyan/60 bg-cyan/10 flex items-center justify-center font-display text-cyan text-[0.65rem]" data-testid="topbar-brand-mark">J</div>
         <div className="hidden sm:block font-display text-[0.7rem] tracking-[0.3em] text-cyan">GAUNTLET</div>
         <div className="hidden md:block font-mono text-[0.6rem] text-alloy">v1.0</div>
       </div>

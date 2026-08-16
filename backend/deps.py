@@ -13,23 +13,25 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from dotenv import load_dotenv
 from fastapi import Cookie, Depends, Header, HTTPException, Request
-from motor.motor_asyncio import AsyncIOMotorClient
+from config import settings
+from sqlite_store import SQLiteClient
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
-
-MONGO_URL = os.environ["MONGO_URL"]
-DB_NAME = os.environ["DB_NAME"]
-EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
-OWNER_USER_ID = os.environ.get("OWNER_USER_ID", "").strip()
-WORKSPACE_ROOT = Path(os.environ["WORKSPACE_ROOT"])
-OVERRIDE_PASSWORD = os.environ["OVERRIDE_PASSWORD"]
+MONGO_URL = settings.mongo_url
+DB_NAME = settings.db_name
+EMERGENT_LLM_KEY = settings.emergent_llm_key
+TAVILY_API_KEY = settings.tavily_api_key
+OWNER_USER_ID = settings.owner_user_id
+WORKSPACE_ROOT = settings.workspace_root
+OVERRIDE_PASSWORD = settings.override_password
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
-client = AsyncIOMotorClient(MONGO_URL)
+if settings.portable:
+    client = SQLiteClient(settings.db_path)
+else:
+    from motor.motor_asyncio import AsyncIOMotorClient
+    client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
 log = logging.getLogger("gauntlet")
@@ -63,6 +65,7 @@ async def get_current_user(
     user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    user.pop("password_hash", None)
     return user
 
 

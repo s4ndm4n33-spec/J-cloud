@@ -30,6 +30,16 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
+export async function initLocalOperator(payload) {
+  const r = await client.post("/auth/local/init", payload);
+  if (r.data?.session_token) setStoredToken(r.data.session_token);
+  return r.data;
+}
+export async function loginLocalOperator(payload) {
+  const r = await client.post("/auth/local/login", payload);
+  if (r.data?.session_token) setStoredToken(r.data.session_token);
+  return r.data;
+}
 export async function exchangeSession(session_id) {
   const r = await client.post("/auth/session", { session_id });
   if (r.data?.session_token) setStoredToken(r.data.session_token);

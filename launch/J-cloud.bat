@@ -28,6 +28,8 @@ set "WORKSPACE_ROOT=%SHARD_ROOT%\workspace"
 set "LOCAL_AUTH=1"
 set "LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1"
 set "CORS_ORIGINS=http://127.0.0.1:3000"
+set "REACT_APP_BACKEND_URL=http://127.0.0.1:8001"
+set "REACT_APP_J_CLOUD_PROFILE=portable"
 
 if not exist "%SHARD_ROOT%\backend" (
   echo [J-CLOUD] Backend directory missing.

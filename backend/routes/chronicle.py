@@ -8,6 +8,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
+from capabilities import capability_enabled
+from config import settings
 from deps import db, get_current_user, project_path, require_project
 from core import chronicle as chron
 from core import email as emailer
@@ -189,7 +191,7 @@ async def get_email_prefs(user: dict = Depends(get_current_user)):
     return {
         "enabled": bool(user.get("email_transcripts_enabled", False)),
         "address": user.get("transcript_email_address") or user.get("email") or "",
-        "resend_configured": bool(os.environ.get("RESEND_API_KEY")),
+        "resend_configured": bool(os.environ.get("RESEND_API_KEY")) and (not settings.portable or capability_enabled("resend")),
     }
 
 

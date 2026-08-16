@@ -6,11 +6,31 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
+from capabilities import require_capability
+from config import settings
 from deps import db, get_current_user, EMERGENT_LLM_KEY
 from core.keyvault import SUPPORTED_PROVIDERS, encrypt_key, mask
 from llm_chain import OLLAMA_PRESETS, resolve_byok, valid_local_url
 
 router = APIRouter()
+
+
+@router.get("/capabilities")
+async def runtime_capabilities(_user: dict = Depends(get_current_user)):
+    return {
+        "profile": settings.profile,
+        "portable": settings.portable,
+        "core": {
+            "filesystem": True,
+            "sqlite": settings.portable,
+            "local_auth": settings.local_auth,
+            "local_llm_base_url": settings.local_llm_base_url if settings.portable else None,
+        },
+        "optional_cloud": {
+            name: name in settings.enabled_cloud_adapters
+            for name in ("github", "tavily", "voice", "r2", "resend", "modal")
+        },
+    }
 
 
 @router.get("/settings/keys")
@@ -61,6 +81,7 @@ async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
     api_key = (payload.get("api_key") or "").strip()
     if provider not in {"openai", "anthropic", "gemini"}:
         raise HTTPException(status_code=400, detail="Unsupported provider")
+    require_capability(provider if provider in {"openai", "anthropic", "gemini"} else "llm")
     if not api_key or len(api_key) < 12:
         return {"ok": False, "provider": provider,
                 "message": "Key looks too short — double-check for a copy/paste truncation."}
@@ -156,6 +177,7 @@ async def set_key(payload: dict, user: dict = Depends(get_current_user)):
         )
         return {"ok": True, "provider": provider, "masked": doc["masked"]}
 
+    require_capability(provider)
     api_key = (payload.get("api_key") or "").strip()
     if not api_key or len(api_key) < 12:
         raise HTTPException(status_code=400, detail="Invalid API key")

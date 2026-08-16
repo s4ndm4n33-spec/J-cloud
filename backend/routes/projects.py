@@ -52,7 +52,7 @@ async def project_tree(project_id: str, user: dict = Depends(get_current_user)):
     """List a project's file tree.
 
     Auto-restore: if the disk dir is missing (post-redeploy on non-persistent
-    volume) but a snapshot exists in R2, pull it down BEFORE the fallback
+    volume) but a snapshot exists, pull it down BEFORE the fallback
     seeder wipes state with an empty scaffold. This is the lazy half of the
     hybrid persistence policy.
     """
@@ -68,7 +68,7 @@ async def project_tree(project_id: str, user: dict = Depends(get_current_user)):
 
     from deps import user_root as _uroot
     disk = _uroot(user["user_id"]) / project_id
-    if not disk.exists() and proj.get("last_r2_key"):
+    if not disk.exists() and (proj.get("last_snapshot_key") or proj.get("last_r2_key")):
         try:
             r = await wsync.restore_project(
                 db, user_id=user["user_id"], project_id=project_id,
@@ -126,8 +126,8 @@ async def write_file(project_id: str, payload: dict, user: dict = Depends(get_cu
     # Mark this project as active so the periodic sync loop picks it up.
     try:
         await wsync.touch_activity(db, user_id=user["user_id"], project_id=project_id)
-    except Exception:  # noqa: BLE001
-        pass  # never let a metadata bump break a file save
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"workspace activity touch failed for {project_id}: {e}")
     return {"ok": True, "path": path, "bytes": len(content)}
 
 
@@ -212,20 +212,20 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
             body=f"User deleted the workspace at {base}. Chronicle preserved for audit.",
             tags=["delete", "project"],
         )
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        log.warning(f"project delete chronicle append failed for {project_id}: {e}")
     return {"ok": True, "deleted": project_id}
 
 
 # ---------------------------------------------------------------------------
-# Workspace persistence — hybrid auto+manual sync to Cloudflare R2.
+# Workspace persistence — hybrid auto+manual local/R2 sync.
 # See `core/workspace_sync.py` for the tar/gzip serialisation and the
 # every-5-min background loop registered in server.py.
 # ---------------------------------------------------------------------------
 
 @router.post("/projects/{project_id}/snapshot")
 async def snapshot_workspace(project_id: str, user: dict = Depends(get_current_user)):
-    """Manual save — tar+gzip the workspace and upload to R2. Returns
+    """Manual save — tar+gzip the workspace to local storage or R2. Returns
     {ok, hash, bytes, ts, unchanged}. `unchanged=True` means we detected
     no diff from the previous snapshot and skipped the upload (idempotent
     press of the SAVE button)."""
@@ -247,14 +247,15 @@ async def snapshot_workspace(project_id: str, user: dict = Depends(get_current_u
 @router.post("/projects/{project_id}/restore")
 async def restore_workspace(project_id: str, user: dict = Depends(get_current_user)):
     """Manual rollback — wipe the on-disk workspace and re-hydrate from the
-    latest R2 snapshot. Destructive; users should be prompted client-side."""
+    latest snapshot. Destructive; users should be prompted client-side."""
     proj = await db.projects.find_one(
         {"project_id": project_id, "user_id": user["user_id"]}, {"_id": 0},
     )
     if not proj:
         raise HTTPException(status_code=404, detail="Project not found")
     if not proj.get("last_r2_key"):
-        raise HTTPException(status_code=404, detail="No snapshot exists to restore from")
+        if not proj.get("last_snapshot_key"):
+            raise HTTPException(status_code=404, detail="No snapshot exists to restore from")
     disk = user_root(user["user_id"]) / project_id
     # Nuke existing state so extraction lands cleanly.
     if disk.exists():

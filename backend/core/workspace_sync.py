@@ -1,12 +1,10 @@
-"""Workspace sync — persist project workspaces to Cloudflare R2.
+"""Workspace sync — persist project workspaces to local snapshots or Cloudflare R2.
 
-The `/app/workspaces/` directory is NOT on a persistent Kubernetes volume in
-this deployment, so every redeploy nukes user code. This module snapshots
-each project as a gzipped tar and stores it in R2 keyed by
-`workspaces/{user_id}/{project_id}/latest.tar.gz`. On boot (or on first
-access after a redeploy), if the project's disk dir is missing but Mongo
-knows about a `last_r2_key`, we lazy-restore from R2 before the seeder
-would otherwise re-init an empty git repo.
+Cloud deployments store gzipped tar snapshots in R2. Portable deployments
+store the same tarball format under the shard root at `data/snapshots/`.
+On boot or first access, if the project directory is missing but metadata
+knows about a snapshot key, we lazy-restore before the seeder would otherwise
+re-init an empty git repo.
 
 Hybrid persistence policy (per user request):
   - Auto-snapshot every N minutes for projects that have been touched
@@ -17,8 +15,8 @@ Hybrid persistence policy (per user request):
   - Auto-restore on project open if disk is empty but a snapshot exists
 
 Snapshot integrity: we hash the tar bytes and skip the upload if the hash
-matches `last_snapshot_hash` in Mongo — protects R2 costs when nothing
-actually changed between periodic ticks.
+matches `last_snapshot_hash` in persistence — protects remote costs and
+local disk churn when nothing actually changed between periodic ticks.
 """
 from __future__ import annotations
 
@@ -32,7 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from training import storage as r2
+from config import settings
+from capabilities import capability_enabled
 
 log = logging.getLogger("workspace_sync")
 
@@ -47,8 +46,12 @@ _EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".log")
 _MAX_TARBALL_BYTES = 128 * 1024 * 1024  # 128 MB hard cap per snapshot
 
 
-def _r2_key(user_id: str, project_id: str) -> str:
+def _snapshot_key(user_id: str, project_id: str) -> str:
     return f"workspaces/{user_id}/{project_id}/latest.tar.gz"
+
+
+def _local_snapshot_path(key: str) -> Path:
+    return settings.snapshot_root / key
 
 
 def _filter(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
@@ -104,21 +107,30 @@ async def snapshot_project(
     # Skip upload if nothing changed since the last snapshot.
     existing = await db.projects.find_one(
         {"project_id": project_id, "user_id": user_id},
-        {"_id": 0, "last_snapshot_hash": 1, "last_r2_key": 1},
+        {"_id": 0, "last_snapshot_hash": 1, "last_r2_key": 1, "last_snapshot_key": 1},
     )
     if not force and existing and existing.get("last_snapshot_hash") == digest:
         return {"ok": True, "unchanged": True, "hash": digest}
 
-    key = _r2_key(user_id, project_id)
-    # R2 upload is a blocking boto3 call — punt to a thread.
-    await asyncio.to_thread(
-        r2.put_bytes, key, data, "application/gzip",
-    )
+    key = _snapshot_key(user_id, project_id)
+    storage = "local"
+    if settings.portable and not capability_enabled("r2"):
+        target = _local_snapshot_path(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_bytes, data)
+    else:
+        from training import storage as r2
+        await asyncio.to_thread(
+            r2.put_bytes, key, data, "application/gzip",
+        )
+        storage = "r2"
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.projects.update_one(
         {"project_id": project_id, "user_id": user_id},
         {"$set": {
-            "last_r2_key": key,
+            "last_snapshot_key": key,
+            "last_snapshot_storage": storage,
+            "last_r2_key": key if storage == "r2" else None,
             "last_snapshot_hash": digest,
             "last_snapshot_ts": now_iso,
             "last_snapshot_bytes": len(data),
@@ -128,7 +140,9 @@ async def snapshot_project(
     await db.project_snapshots.insert_one({
         "project_id": project_id,
         "user_id": user_id,
-        "r2_key": key,
+        "snapshot_key": key,
+        "storage": storage,
+        "r2_key": key if storage == "r2" else None,
         "hash": digest,
         "size_bytes": len(data),
         "ts": now_iso,
@@ -146,14 +160,20 @@ async def restore_project(
     """
     proj = await db.projects.find_one(
         {"project_id": project_id, "user_id": user_id},
-        {"_id": 0, "last_r2_key": 1},
+        {"_id": 0, "last_r2_key": 1, "last_snapshot_key": 1, "last_snapshot_storage": 1},
     )
-    key = (proj or {}).get("last_r2_key")
+    key = (proj or {}).get("last_snapshot_key") or (proj or {}).get("last_r2_key")
     if not key:
         return {"ok": False, "missing": True}
-    data = await asyncio.to_thread(r2.get_bytes, key)
+    storage = (proj or {}).get("last_snapshot_storage") or ("r2" if (proj or {}).get("last_r2_key") else "local")
+    if settings.portable and storage != "r2":
+        path = _local_snapshot_path(key)
+        data = await asyncio.to_thread(path.read_bytes) if path.exists() else None
+    else:
+        from training import storage as r2
+        data = await asyncio.to_thread(r2.get_bytes, key)
     if data is None:
-        log.warning(f"snapshot key {key} not found in R2")
+        log.warning(f"snapshot key {key} not found in {storage}")
         return {"ok": False, "missing": True}
     file_count = await asyncio.to_thread(_extract_tarball, data, dest_dir)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -177,6 +197,7 @@ async def _sync_loop(db, project_path_fn, interval_sec: int = 300,
     """Background loop — every `interval_sec`, snapshot projects that saw
     activity in the last `stale_after_sec` seconds. Skips projects whose
     hash hasn't changed (see snapshot_project's dedup)."""
+    from training import storage as r2
     while True:
         try:
             await asyncio.sleep(interval_sec)
@@ -219,7 +240,10 @@ class SyncLoop:
     def start(self, db, project_path_fn, interval_sec: int = 300) -> None:
         if self._task and not self._task.done():
             return
-        # Only start if R2 is wired — otherwise the loop is dead weight.
+        if settings.portable and not capability_enabled("r2"):
+            log.info("workspace-sync: portable local snapshots run on explicit save/session close")
+            return
+        from training import storage as r2
         if not r2.r2_configured():
             log.info("workspace-sync: R2 not configured; periodic loop disabled")
             return

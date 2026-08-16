@@ -15,8 +15,8 @@ import logging
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-from emergentintegrations.llm.openai import OpenAISpeechToText, OpenAITextToSpeech
 
+from capabilities import require_capability
 from deps import EMERGENT_LLM_KEY, get_current_user
 
 log = logging.getLogger("gauntlet.voice")
@@ -49,6 +49,10 @@ async def voice_transcribe(
     buf = io.BytesIO(audio)
     buf.name = fname
 
+    require_capability("voice")
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Voice requires configured cloud speech credentials")
+    from emergentintegrations.llm.openai import OpenAISpeechToText
     stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
     try:
         resp = await stt.transcribe(
@@ -83,6 +87,10 @@ async def voice_speak(
     speed = float(payload.get("speed") or 1.0)
     speed = max(0.5, min(speed, 2.0))
 
+    require_capability("voice")
+    if not EMERGENT_LLM_KEY:
+        raise HTTPException(status_code=503, detail="Voice requires configured cloud speech credentials")
+    from emergentintegrations.llm.openai import OpenAITextToSpeech
     tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
     try:
         audio_bytes = await tts.generate_speech(
