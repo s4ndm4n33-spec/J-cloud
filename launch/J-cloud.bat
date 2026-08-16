@@ -40,22 +40,21 @@ if not exist "%SHARD_ROOT%\frontend\node_modules" if exist "%NODE%" (
   exit /b 4
 )
 
-start "J-cloud Backend" cmd /k "cd /d "%SHARD_ROOT%\backend" && "%PYTHON%" -m uvicorn server:app --host 127.0.0.1 --port 8001"
+start "J-cloud Backend" cmd /k "cd /d ""%SHARD_ROOT%\backend"" && ""%PYTHON%"" -m uvicorn server:app --host 127.0.0.1 --port 8001"
 
 timeout /t 2 /nobreak >nul
 
 if exist "%SHARD_ROOT%\frontend\node_modules" if exist "%NODE%" (
-  start "J-cloud Frontend" cmd /k "cd /d "%SHARD_ROOT%\frontend" && "%NODE%" node_modules\react-scripts\bin\react-scripts.js start"
+  start "J-cloud Frontend" cmd /k "cd /d ""%SHARD_ROOT%\frontend"" && ""%NODE%"" node_modules\react-scripts\bin\react-scripts.js start"
 )
 
 start "J-cloud Browser" http://127.0.0.1:3000
 
 echo.
 echo J-CLOUD SOVEREIGN SHARD
- echo Root: %SHARD_ROOT%
+echo Root: %SHARD_ROOT%
 echo Backend: http://127.0.0.1:8001
 echo Frontend: http://127.0.0.1:3000
 echo Profile: portable
-
 echo.
 endlocal
