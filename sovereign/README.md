@@ -72,6 +72,62 @@ A release is considered portable only when a clean Windows machine with no proje
 
 Internet access may be used to download a model during an explicit setup operation. It must not be required for normal operation once the shard is assembled.
 
+## Release assembly
+
+The release builder (`sovereign/build/assemble_shard.sh`) assembles a
+relocatable artifact from the source tree. It:
+
+1. Validates the source tree has all required components.
+2. Audits for secrets (`.keys_secret`, `.env`, `*.pem`, `*.key`) and refuses
+   to assemble if any are found.
+3. Builds the frontend production artifact.
+4. Copies backend source, frontend build, launch scripts, and documentation.
+5. Generates a machine-readable manifest (`manifests/manifest.json`) with
+   SHA-256 checksums for every file (`manifests/SHA256SUMS.txt`).
+6. Validates the artifact with `validate_shard.sh`.
+
+```bash
+bash sovereign/build/assemble_shard.sh
+```
+
+The artifact is written to `sovereign/release/J-cloud-Sovereign/`.
+
+### Validation
+
+```bash
+bash sovereign/build/validate_shard.sh sovereign/release/J-cloud-Sovereign/
+```
+
+The validator checks:
+- Directory structure completeness
+- Backend and frontend artifact presence
+- Launcher and configuration presence
+- Bundled runtime components (warns if missing, never claims missing as bundled)
+- Secret audit (fails if any secret is found)
+- Manifest and checksum verification
+- Path audit (fails on hard-coded drive letters)
+- Cloud adapter mandatory check
+
+### Smoke test
+
+```bash
+python3 sovereign/tests/smoke_test.py --shard-dir sovereign/release/J-cloud-Sovereign/
+```
+
+The smoke test boots the backend in portable mode on a test port and
+verifies:
+- Backend boots and responds
+- Sovereign status endpoint reports portable profile, SQLite, local auth
+- All cloud adapters are disabled
+- Local auth init, login, and token-based /auth/me work
+- Project creation and list work
+- File write and read work
+- GitHub and voice adapters return 503
+
 ## Security rule
 
 Never place API keys, OAuth tokens, passwords, private certificates, or production `.env` files in the repository or release image. Local secrets belong in the operator-controlled `config/` directory and should be generated on first boot.
+
+The release builder enforces this by auditing the source tree before
+assembly. If any secret file is detected, the build is aborted with exit
+code 4.
