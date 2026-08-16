@@ -15,6 +15,9 @@ import logging
 import os
 from typing import Optional
 
+from capabilities import capability_enabled
+from config import settings
+
 log = logging.getLogger("email")
 
 try:
@@ -38,6 +41,8 @@ async def send_email(
     *, to: str, subject: str, html: str, text: Optional[str] = None,
 ) -> dict:
     """Send one email. Returns {ok, id?, error?}."""
+    if settings.portable and not capability_enabled("resend"):
+        return {"ok": False, "error": "Email disabled in portable mode"}
     if not _api_key():
         return {"ok": False, "error": "Resend not configured (RESEND_API_KEY missing)"}
     if resend is None:

@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Optional
-
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from typing import Any, Optional
 
 from .storage import put_bytes
 
@@ -18,7 +16,7 @@ def _jsonl(row: dict) -> bytes:
     return (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-async def export_sft(db: AsyncIOMotorDatabase, dataset_id: str,
+async def export_sft(db: Any, dataset_id: str,
                      row_limit: int = 5000,
                      date_from: Optional[str] = None,
                      date_to: Optional[str] = None) -> dict:
@@ -72,7 +70,7 @@ async def export_sft(db: AsyncIOMotorDatabase, dataset_id: str,
     }
 
 
-async def export_dpo(db: AsyncIOMotorDatabase, dataset_id: str,
+async def export_dpo(db: Any, dataset_id: str,
                      row_limit: int = 5000,
                      only_approved: bool = True) -> dict:
     """knowledge_dpo_candidates → DPO JSONL.

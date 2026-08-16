@@ -12,6 +12,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from config import settings
 from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
 from core.keyvault import decrypt_key
 
@@ -176,10 +177,16 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
     attempts: list[dict] = []
     chain_started = _time.perf_counter()
 
+    if settings.portable:
+        chain = [("local", "ollama", "user-default")]
+
     for pass_idx in range(max_passes):
         for source, provider, model in chain:
             if source == "universal":
                 api_key = EMERGENT_LLM_KEY
+                effective_model = model
+            elif source == "local":
+                api_key = {"base_url": settings.local_llm_base_url, "default_model": settings.local_llm_model}
                 effective_model = model
             else:
                 api_key = await resolve_byok(user_id, provider)
