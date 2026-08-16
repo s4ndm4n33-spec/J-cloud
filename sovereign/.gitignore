@@ -1,0 +1,13 @@
+# Assembled release/runtime assets
+runtime/
+models/
+data/
+logs/
+workspace/
+config/.env.local
+
+# Local release output
+release/
+dist/
+*.zip
+CHECKSUMS.sha256
