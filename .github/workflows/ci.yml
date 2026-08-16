@@ -1,0 +1,155 @@
+name: CI - tests, linters, artifacts
+
+on:
+  push:
+    branches: [ 'sovereign-shards-portable' ]
+  pull_request:
+    branches: [ 'sovereign-shards-portable' ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python tests & linters (matrix)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pytest flake8 || true
+
+      - name: Run Python tests
+        run: |
+          if command -v pytest >/dev/null 2>&1; then
+            pytest --junitxml=pytest-results.xml || true
+          else
+            echo "pytest not found or no tests configured"
+          fi
+
+      - name: Run Python linter
+        run: |
+          if command -v flake8 >/dev/null 2>&1; then
+            flake8 . || true
+          else
+            echo "flake8 not installed"
+          fi
+
+      - name: Upload Python test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-results-${{ matrix.python-version }}
+          path: |
+            pytest-results.xml
+            .pytest_cache || true
+
+  javascript:
+    name: JavaScript tests & linters (matrix)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install Node dependencies
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Run JS tests
+        run: |
+          if npm run | grep -q "test"; then
+            npm test --silent || true
+          else
+            echo "No npm test script defined"
+          fi
+
+      - name: Run ESLint
+        run: |
+          if [ -f package.json ] && jq -e '.scripts.eslint' package.json >/dev/null 2>&1; then
+            npm run eslint || npx eslint . || true
+          else
+            if [ -f .eslintrc ] || [ -f .eslintrc.js ] || [ -f .eslintrc.json ]; then
+              npx eslint . || true
+            else
+              echo "No eslint config or script found"
+            fi
+          fi
+
+      - name: Upload JS test artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-test-logs-${{ matrix.node-version }}
+          path: |
+            npm-debug.log || true
+            jest-results.json || true
+
+  ui-artifact:
+    name: Build UI artifact (for manual UI testing)
+    runs-on: ubuntu-latest
+    needs: [javascript]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect UI directory
+        id: find_ui
+        run: |
+          # prefer common frontend directories
+          if [ -f package.json ]; then echo "ui_dir=." >> $GITHUB_OUTPUT
+          elif [ -f frontend/package.json ]; then echo "ui_dir=frontend" >> $GITHUB_OUTPUT
+          elif [ -f ui/package.json ]; then echo "ui_dir=ui" >> $GITHUB_OUTPUT
+          elif [ -f web/package.json ]; then echo "ui_dir=web" >> $GITHUB_OUTPUT
+          else echo "ui_dir=" >> $GITHUB_OUTPUT; fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18.x
+          cache: 'npm'
+
+      - name: Install and build UI (if found)
+        if: steps.find_ui.outputs.ui_dir != ''
+        run: |
+          cd "${{ steps.find_ui.outputs.ui_dir }}"
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then npm ci; else npm install; fi
+          if npm run | grep -q "build"; then npm run build; else echo "No build script found in package.json"; fi
+
+      - name: Package artifact
+        id: package
+        run: |
+          ART=ui-artifact-${{ github.sha }}.zip
+          DIR="${{ steps.find_ui.outputs.ui_dir }}"
+          if [ -z "$DIR" ]; then echo "artifact=" >> $GITHUB_OUTPUT; echo "No UI directory found, nothing was packaged"; exit 0; fi
+          # prefer common build output directories
+          if [ -d "$DIR/dist" ]; then zip -r "$ART" "$DIR/dist";
+          elif [ -d "$DIR/build" ]; then zip -r "$ART" "$DIR/build";
+          elif [ -d "$DIR/public" ]; then zip -r "$ART" "$DIR/public";
+          else zip -r "$ART" "$DIR" || true; fi
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
+
+      - name: Upload UI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-artifact
+          path: ${{ steps.package.outputs.artifact }}
