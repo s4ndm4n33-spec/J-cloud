@@ -145,7 +145,7 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
     # scoped to this user's own facts + owner-curated shared baseline.
     mind_block = ""
     try:
-        _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+        _is_owner = user.get("is_owner", False)
         mind_hits = await km.recall(
             db, message,
             user_id=user["user_id"], is_owner=_is_owner, k=5,
@@ -200,7 +200,7 @@ async def _ai_chat_impl(payload: dict, user: dict) -> dict:
         "ts": datetime.now(timezone.utc).isoformat(),
     })
 
-    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    is_owner = user.get("is_owner", False)
     chat_system = owner_system_prompt(CHAT_PROMPT) if is_owner else CHAT_PROMPT
     reply, meta = await chain_call(
         user["user_id"], "chat", chat_system, user_text,
@@ -416,7 +416,7 @@ async def ai_refine(payload: dict, user: dict = Depends(get_current_user)):
     # Substrate secrecy filter on refined code output too — J shouldn't be
     # coerced into leaking internals via a "refine this file" attack.
     # Owner bypass: the operator can refine any of their own internals.
-    if OWNER_USER_ID and user["user_id"] == OWNER_USER_ID:
+    if user.get("is_owner"):
         leak_hits = []
     else:
         original_refined = refined
@@ -574,7 +574,7 @@ async def _ai_agent_impl(payload: dict, user: dict) -> dict:
     # shared TAVILY_API_KEY on web_search. Everyone else runs with an empty
     # tavily_key, which makes web_search fail cleanly with a "needs Tavily
     # key" message. (Per-user Tavily BYOK is P1.)
-    _is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    _is_owner = user.get("is_owner", False)
     ctx.tavily_key = TAVILY_API_KEY if _is_owner else ""
 
     # --- J:MIND recall — inject top-K facts scoped to this user (own facts
@@ -918,7 +918,7 @@ async def ai_agent_stream(payload: dict, user: dict = Depends(get_current_user))
 async def ai_chain(user: dict = Depends(get_current_user)):
     """Show the resolved failover chain for each task (which steps will actually run)."""
     private_mode = bool(user.get("private_mode", False))
-    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    is_owner = user.get("is_owner", False)
     # Pre-fetch all BYOK docs in one hit so we can annotate every step with
     # the user's preferred_model.
     all_byok = {d["provider"]: d async for d in db.user_provider_keys.find(

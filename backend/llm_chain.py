@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from openai import AsyncOpenAI  # used by Ollama + all OAI-compat providers (Groq, OpenRouter)
 
-from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
+from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_IDS
 from core.keyvault import decrypt_key
 
 # Safe import for WKLTransformer (handles both package and root backend pathing)
@@ -152,12 +152,33 @@ async def _call_oai_compat(base_url: str, api_key: str, model: str,
 
 
 async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
-    """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM)."""
+    """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM).
+
+    Local models often ship with a tight default context window (Ollama's
+    default is 2K; most quantized llama.cpp builds cap at 4K). We do two
+    layers of shrinking BEFORE the request:
+      1. Hard char-budget trim — head-keep the system prompt (identity
+         + protocol), tail-keep user_text (most recent turns + current msg).
+      2. WKL encode — bijective token→key substitution of high-frequency
+         substrate vocabulary. Decoded on the response so J still speaks
+         English out.
+    """
+    # ~4 chars/token English; reserve 512 tokens of response headroom.
+    # 3500 input tokens ≈ 14000 chars total pre-WKL.
+    _CTX_CHAR_BUDGET = int(os.environ.get("OLLAMA_CHAR_BUDGET", "14000"))
+    if len(system) + len(user_text) > _CTX_CHAR_BUDGET:
+        sys_budget = min(len(system), max(2500, _CTX_CHAR_BUDGET // 3))
+        user_budget = _CTX_CHAR_BUDGET - sys_budget - 200
+        system = system[:sys_budget]
+        if len(user_text) > user_budget:
+            user_text = ("[…context truncated for local model — showing most recent…]\n"
+                         + user_text[-user_budget:])
+
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
     client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=120.0)
-    
+
     # WKL Handshake (encode if available)
     if wkl:
         system += "\n\nYou are now communicating via the Weighted Key Language (WKL). Use the provided schema for all technical and frequent terms."
@@ -234,14 +255,9 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         chain = [s for s in chain if s[1] == "ollama"]
 
     # OWNER LOCK: the shared EMERGENT_LLM_KEY is only usable by the app owner(s).
-    if isinstance(OWNER_USER_ID, str):
-        owners = [o.strip() for o in OWNER_USER_ID.split(",") if o.strip()]
-    elif isinstance(OWNER_USER_ID, bytes):
-        owners = [o.strip() for o in OWNER_USER_ID.decode("utf-8").split(",") if o.strip()]
-    else:
-        owners = OWNER_USER_ID if isinstance(OWNER_USER_ID, (list, set, tuple)) else [OWNER_USER_ID]
-
-    is_owner = user_id in owners
+    # OWNER_USER_IDS is a frozenset built from a comma-separated env var so a
+    # single user with multiple accounts (phone + laptop) is recognized on both.
+    is_owner = user_id in OWNER_USER_IDS
     if not is_owner:
         chain = [s for s in chain if s[0] != "universal"]
 

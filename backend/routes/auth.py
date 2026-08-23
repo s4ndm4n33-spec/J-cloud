@@ -79,8 +79,9 @@ async def auth_me(user: dict = Depends(get_current_user)):
     # gate owner-only UI (admin link in TopBar, ownership-sensitive controls)
     # without every component having to hit /api/knowledge/stats for the flag.
     import os as _os
-    owner_id = _os.environ.get("OWNER_USER_ID", "").strip()
-    return {**user, "is_owner": bool(owner_id and user.get("user_id") == owner_id)}
+    from deps import is_owner as _is_owner
+    _os.environ.get("OWNER_USER_ID", "")  # touch to preserve legacy log semantics
+    return {**user, "is_owner": _is_owner(user.get("user_id", ""))}
 
 
 @router.post("/auth/logout")

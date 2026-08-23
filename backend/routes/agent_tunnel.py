@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 def _require_owner(user: dict) -> None:
-    if not OWNER_USER_ID or user.get("user_id") != OWNER_USER_ID:
+    if not user.get("is_owner"):
         raise HTTPException(status_code=403, detail="owner only")
 
 

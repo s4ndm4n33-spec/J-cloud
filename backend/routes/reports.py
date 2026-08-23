@@ -37,7 +37,7 @@ def _now() -> str:
 
 
 def _owner_only(user: dict):
-    if not OWNER_USER_ID or user["user_id"] != OWNER_USER_ID:
+    if not user.get("is_owner"):
         raise HTTPException(status_code=403, detail="owner_only")
 
 

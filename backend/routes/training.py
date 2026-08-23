@@ -32,7 +32,7 @@ router = APIRouter()
 
 
 def _owner_only(user: dict) -> None:
-    if not OWNER_USER_ID or user["user_id"] != OWNER_USER_ID:
+    if not user.get("is_owner"):
         raise HTTPException(status_code=403, detail="owner_only")
 
 
@@ -53,7 +53,7 @@ async def training_health(user: dict = Depends(get_current_user)):
     current bolt console expects (`version`, `storage`, `webhook`) so a
     green ✅ shows up per-component instead of a bare `vundefined`.
     """
-    is_owner = bool(OWNER_USER_ID) and user["user_id"] == OWNER_USER_ID
+    is_owner = user.get("is_owner", False)
     version = os.environ.get("BACKEND_VERSION", "0.9.1")
     # R2 is our storage substrate — the S3_BUCKET name is legacy from an
     # earlier draft that never shipped. Check R2 primarily; fall back to
