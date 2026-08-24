@@ -87,14 +87,26 @@ await page.evaluate("document.fonts.ready")
 If the session ever bounces (401), reseed via mongosh (see `/app/memory/test_credentials.md` §Re-seed). No password needed — cookie auth only.
 
 ### 2.3 Warm-up sequence (run once per capture session)
-1. Navigate to `/ide`.
-2. Create a fresh project titled `Builder Fest Demo`:
-   - Click `[data-testid="new-project-button"]`
-   - Fill `[data-testid="new-project-name-input"]` with `Builder Fest Demo`
-   - Click `[data-testid="new-project-confirm"]`
-3. Wait for `[data-testid="file-tree"]` to render.
-4. Prime a `hello.py` file with 6 lines of intentionally boring code (see §4 Shot 03).
-5. Open the AI Coworker (`[data-testid="ai-coworker"]`) to the **Chat** tab (`[data-testid="ai-tab-chat"]`).
+Instead of scripting project creation by hand, hit the promo warmup endpoint —
+it rebuilds both demo projects from scratch every call and returns their
+IDE URLs plus the exact prompts to feed J:
+
+```python
+r = await page.request.post(
+    "https://gauntlet-devspace.preview.emergentagent.com/api/promo/warmup"
+)
+warmup = await r.json()
+# warmup["demo_a"] → { project_id, ide_url, prompt_for_j, used_in_shots: ["03","04","05"] }
+# warmup["demo_b"] → { project_id, ide_url, prompt_for_j, expected_gauntlet_verdict, used_in_shots: ["06"] }
+
+# Then for each demo:
+await page.goto(f"https://gauntlet-devspace.preview.emergentagent.com{warmup['demo_a']['ide_url']}")
+await page.wait_for_selector('[data-testid="file-tree"]', state="visible")
+await page.evaluate("document.fonts.ready")
+```
+
+The endpoint is **owner-only** and idempotent — safe to call between takes to
+reset state. Confirms with `{"ok": true, "reset_at": ...}`.
 
 ---
 
@@ -250,7 +262,7 @@ All VO lines are **exact — do not paraphrase**. Total VO word count = 118 (spo
   > **Verifiable execution.**
   > **Zero permission slips.**
   Each line draws in one at a time (350ms each, 200ms stagger). Then the wordmark `GAUNTLET DEVSPACE` appears below in alloy grey, 32pt, letter-spaced +2%.
-  Bottom-right, small: `builder fest · <event-date-placeholder>` · URL: `blue-j-gauntlet.com`
+  Bottom-right, small: `blue-j-gauntlet.com`
 - **VO:** _"Gauntlet DevSpace. See you at Builder Fest."_
 - **On-screen text:** as above
 - **SFX:** score resolves on a single sustained low note. Final glockenspiel chime on the wordmark.
