@@ -123,3 +123,92 @@ _signed: **E1 (main agent)**_  `feature` `governance`
 **Next step.** Surface the log in the UI as a new AI Coworker tab so users can read their own build history without curl. Add a "Pin entry" button so important milestones float above the auto-noise.
 
 ---
+
+## 2026-08-24T02:40:00+00:00 — Prod Environment Alignment (Training Pipeline + BYOK Model Picker)
+_signed: **E1 (main agent)**_  `feature` `training` `byok` `prod`
+
+**Problem.** Three separate leaks between preview and production were quietly conspiring to poison the training loop and hide fluid model selection from users:
+1. Training exporter (`export_sft` / `export_dpo`) read from whichever `db` the backend was bound to — in preview that's `mongodb://localhost:27017/test_database`, i.e. junk data. Any dataset built in preview was silently poisoned with test rows.
+2. Bolt.new Training Console was documented to point at `blue-j-gauntlet.com` but there was no client-side lock — a single misclick in the Settings pane could re-route the whole pipeline at preview data.
+3. `preferred_model` was fully honoured at the chain layer (`llm_chain.py:234-235`) and persisted correctly on `PUT /settings/keys`, but the SettingsModal only exposed a model picker for Ollama. Effectively dead code for OpenAI / Anthropic / Gemini / Groq / OpenRouter — non-owners were stuck on the hardcoded `TASK_CHAINS` defaults with no way to pin their own slug.
+
+**Fix.**
+1. `deps.py` now exposes `prod_db` — a dedicated motor client built from `PROD_MONGO_URL` + `PROD_DB_NAME`. Falls back to `db` when unset, zero regression. `routes/training.py::_run_export` reads from `prod_db` and stamps every dataset row with `source: "prod" | "preview"` so nobody accidentally trains on junk.
+2. `docs/bolt-training-console-lock-prod.md` — paste-in prompt for the bolt.new console that (a) defaults `apiBaseUrl` to prod, (b) auto-heals any `preview.emergentagent.com` string found in localStorage, (c) alarms with a red banner if `data.public_backend_url` doesn't match the client's `apiBaseUrl`, (d) renders a `SOURCE · PROD | PREVIEW` chip under the health pills.
+3. `routes/settings.py::set_key` — the `PUT /settings/keys` endpoint now accepts model-only updates when a key is already on file (no re-paste required). Empty `preferred_model` explicitly clears the override via `$unset`. `SettingsModal.jsx` renders a second row per BYOK provider with a text input + `MODEL` save button, placeholder-hinted from `MODEL_HINTS`. Seeds from the persisted `preferred_model` and disables the save button when unchanged.
+
+**Why.** Sovereign Infrastructure — the training pipeline is downstream of every user turn. If it silently drinks from the wrong tap the whole fine-tune is compromised, and the receipts we produced would be false receipts. Fluid model picking is what makes the "J on OpenRouter → J failing over to J" dogfood loop possible: publish an adapter, paste its slug, zero code changes needed.
+
+**Next step.** Add a matching `SOURCE · PROD | PREVIEW` chip inside the main Gauntlet DevSpace HUD so operators can never lose track of which environment they're typing into. Then upgrade the fluid text field to a live dropdown by fetching each provider's `/models` list on save.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/deps.py",
+    "backend/routes/training.py",
+    "backend/routes/settings.py",
+    "backend/.env",
+    "frontend/src/components/SettingsModal.jsx",
+    "docs/bolt-training-console-lock-prod.md"
+  ],
+  "env_vars_added": ["PROD_MONGO_URL", "PROD_DB_NAME"],
+  "endpoints_touched": ["PUT /api/settings/keys"],
+  "dataset_row_schema_delta": {"source": "prod | preview"},
+  "activation": "Paste read-only prod Mongo URI into PROD_MONGO_URL (in preview .env); restart backend."
+}
+```
+
+---
+
+## 2026-08-24T02:55:00+00:00 — Dual Owner Reconciliation + Ollama Context Guardrail (WKL Preserved)
+_signed: **E1 (main agent)**_  `bugfix` `feature` `ollama` `wkl` `owner`
+
+**Problem.** Two entangled failures on the metal machine:
+
+1. **Dual `OWNER_USER_ID` unreconciled.** Owner has two `user_id`s (one from phone login, one from laptop). Chain owner-lock at `llm_chain.py` compared `user_id == OWNER_USER_ID` — a scalar string equality. Whichever `user_id` didn't match got treated as a non-owner: universal key stripped, forcing BYOK, and (per the RCA on the just-deployed prod) exhausting the whole 12-step chain when the BYOK keys stored in prod's Mongo were revoked/rate-limited copies. J had started a WIP fix in `llm_chain.py:237-244` — 8 lines of `isinstance(OWNER_USER_ID, str/bytes/list/set/tuple)` branch guessing — but abandoned it mid-flight when the context blew up. That WIP was still in the file, functional but only for the parse-CSV branch and confusingly typed.
+
+2. **40k-token prompt hitting a 4096-token local model.** Running J on-metal via Ollama. Chat context concatenates the CHAT_PROMPT (~7 KB) + `_build_context_block` (open file body!) + J:MIND recall (5 facts × ~350 chars) + eidetic history (up to 50 prior turns × 2000 chars = 100 KB). The `_call_ollama` path had a **WKL (Weighted Key Language)** compression layer already wired — a bijective schema in `wkl_schema.json` that maps common substrate vocab (`" the "` → `"$00"`, `" gauntlet "` → `"$13"`, `" substrate "` → `"$12"`, etc.) into 3-char keys — but WKL alone yields only ~30–40% char savings, nowhere near enough to fit 40k into 4k. WKL was also **completely undocumented** outside this file: not in the migration log, not surfaced in the Settings UI, not mentioned in `AGENTS.md`.
+
+**Fix.**
+1. `deps.py` — `OWNER_USER_ID` env now parses as comma-separated → `OWNER_USER_IDS` frozenset. Kept legacy scalar `OWNER_USER_ID` bound to the first entry for backwards compat. Added `is_owner(uid: str) -> bool` helper. `get_current_user` injects `user["is_owner"]` once so every downstream route just checks `user.get("is_owner")` instead of re-parsing env.
+2. Swept the four owner-gated route files (`ai.py`, `training.py`, `agent_tunnel.py`, `reports.py`) plus `auth.py::/auth/me` to consume `user.get("is_owner")` uniformly. Deleted J's abandoned 8-line `isinstance` branch in `llm_chain.py` and replaced with `is_owner = user_id in OWNER_USER_IDS`.
+3. `_call_ollama` in `llm_chain.py` — hard char-budget trim **before** the WKL encode step. Head-preserves system prompt (≥2500 chars — persona identity), tail-preserves user_text (most recent turns + current message). Prepends `[…context truncated for local model — showing most recent…]` marker so J knows history was clipped. Default budget 14000 chars (~3500 input tokens, leaves 512 for response inside a 4096 window). Override via `OLLAMA_CHAR_BUDGET` env for tighter (2K) or wider (128K llama3.1) contexts. WKL preserved intact — now runs on the already-trimmed text, so the two layers stack (~40k → 14k trim → ~9k on the wire).
+4. Verified WKL bijectivity by running the module self-test: `"the gauntlet backend and the substrate protocol"` → `"the$13backend$01the$12protocol"` → decodes losslessly (37% savings on that sample).
+
+**Why.** Sovereign Infrastructure — owner-lock is the whole reason preview and prod are separate. A silent classification mistake ("you're not the owner") strips the universal fallback and pushes every call onto BYOK, which is exactly what took prod dark this week. And Verifiable Execution — a local model that silently overflows and rejects the request is worse than one that refuses to start; the trim + marker makes the constraint legible to J instead of being an invisible ceiling.
+
+**Next step.** Add an `OLLAMA_CHAR_BUDGET` control in the Settings modal (currently env-only) so users can tune it per-model without a restart. Ship WKL v2 — dynamically pad the schema with each user's project-specific vocab (extracted from the top-N tokens in their chronicle) for another ~15% compression. Add an `LLM Exception Categorizer` (already scoped in PRD) so opaque `chain exhausted` messages become an at-a-glance provider health board.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/deps.py",
+    "backend/llm_chain.py",
+    "backend/routes/ai.py",
+    "backend/routes/training.py",
+    "backend/routes/agent_tunnel.py",
+    "backend/routes/reports.py",
+    "backend/routes/auth.py"
+  ],
+  "env_vars_new": ["OLLAMA_CHAR_BUDGET (optional, default 14000)"],
+  "env_vars_semantics_changed": ["OWNER_USER_ID (now comma-separated list, backwards compatible)"],
+  "wkl": {
+    "location": "backend/wkl_transformer.py + backend/wkl_schema.json",
+    "activation": "loaded automatically when wkl_schema.json exists; applied only in _call_ollama",
+    "roundtrip_verified": true,
+    "sample_savings_pct": 37
+  },
+  "things_i_found_that_were_previously_missed_or_messed_up": [
+    "J's WIP dual-owner isinstance branch in llm_chain.py (dead code / stale mid-refactor) — removed.",
+    "WKLTransformer + wkl_schema.json shipped but zero documentation in MIGRATION_LOG, AGENTS.md, or the Settings UI — logged here now.",
+    "preferred_model fully wired at the DB/chain layer but no UI exposure for cloud providers — fixed in the prior entry.",
+    "Zero users with is_owner=true in prod Mongo per deployer RCA — the new OWNER_USER_IDS pathway bypasses the DB flag entirely and computes membership from env, which is what the code always intended.",
+    "Preview and prod are on SEPARATE Mongos — BYOK keys saved in preview NEVER propagate to prod. Not a bug, but an operator invariant that was undocumented. Documented via the SOURCE chip in the prior entry."
+  ]
+}
+```
+
+---
+
