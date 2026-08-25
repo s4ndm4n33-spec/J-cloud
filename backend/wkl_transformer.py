@@ -53,20 +53,35 @@ class WKLTransformer:
         )
 
     def _load_schema(self) -> None:
-        """Load schema JSON and build full forward/reverse mappings."""
+        """Load schema JSON and build full forward/reverse mappings.
+
+        Iterates every top-level object in the schema whose name doesn't
+        start with an underscore (so `_meta` is skipped). This lets the
+        schema grow — v2 added `substrate_multiword`, `prose_common`,
+        `structural_markers`, `signatures` — without touching this loader.
+        """
         with open(self.schema_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        std_keys: Dict[str, str] = data.get("std_keys", {})
-        eng_keys: Dict[str, str] = data.get("engineering_block", {})
+        collisions: Dict[str, Tuple[str, str]] = {}
+        for block_name, block in data.items():
+            if block_name.startswith("_") or not isinstance(block, dict):
+                continue
+            for key, phrase in block.items():
+                # Guard against silent bijectivity loss: if two blocks map
+                # the same phrase to different keys, we must know.
+                if phrase in self.encode_map and self.encode_map[phrase] != key:
+                    collisions[phrase] = (self.encode_map[phrase], key)
+                self.decode_map[key] = phrase
+                self.encode_map[phrase] = key
 
-        # Decode map: Key -> Original Token
-        self.decode_map.update(std_keys)
-        self.decode_map.update(eng_keys)
-
-        # Encode map: Original Token -> Key
-        for key, value in self.decode_map.items():
-            self.encode_map[value] = key
+        if collisions:
+            # Non-fatal — the last block wins per Python dict semantics —
+            # but callers deserve to see this in logs at load time.
+            import logging
+            logging.getLogger("wkl").warning(
+                "WKL schema phrase collisions: %s", collisions
+            )
 
     def _compile_regex(self) -> None:
         """Compile regex patterns sorting keys by length descending to prevent partial match overwrites."""
