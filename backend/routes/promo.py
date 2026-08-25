@@ -11,12 +11,16 @@ from __future__ import annotations
 import shutil
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from deps import db, get_current_user, seed_project, user_root, safe_join
 
 router = APIRouter()
+
+_MANIFEST_PATH = Path("/app/docs/promo/builderfest-promo-manifest.md")
 
 # The manifest hard-codes these names — do not rename without updating
 # Shot 03 (Builder Fest Demo) and Shot 06 (Unsafe Ship-It) in the manifest.
@@ -138,3 +142,15 @@ async def promo_warmup(user: dict = Depends(get_current_user)):
             "expected_gauntlet_verdict": "HALT · destructive_pattern · shell_injection",
         },
     }
+
+
+
+@router.get("/promo/manifest", response_class=PlainTextResponse)
+async def promo_manifest():
+    """Public read of the Builder Fest promo manifest markdown. Public on
+    purpose — the director agent runs headless and shouldn't need auth just
+    to fetch the brief. Contains no secrets (the test-owner session cookie
+    is in test_credentials.md, which is NOT here)."""
+    if not _MANIFEST_PATH.exists():
+        raise HTTPException(status_code=404, detail="manifest_missing")
+    return _MANIFEST_PATH.read_text()

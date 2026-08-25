@@ -165,7 +165,7 @@ async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -
     """
     # ~4 chars/token English; reserve 512 tokens of response headroom.
     # 3500 input tokens ≈ 14000 chars total pre-WKL.
-    _CTX_CHAR_BUDGET = int(os.environ.get("OLLAMA_CHAR_BUDGET", "14000"))
+    _CTX_CHAR_BUDGET = int(os.environ.get("OLLAMA_CHAR_BUDGET", "12000"))
     if len(system) + len(user_text) > _CTX_CHAR_BUDGET:
         sys_budget = min(len(system), max(2500, _CTX_CHAR_BUDGET // 3))
         user_budget = _CTX_CHAR_BUDGET - sys_budget - 200
@@ -177,7 +177,7 @@ async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
-    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=120.0)
+    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=300.0)
 
     # WKL Handshake (encode if available)
     if wkl:
