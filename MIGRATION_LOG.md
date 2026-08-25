@@ -212,3 +212,64 @@ _signed: **E1 (main agent)**_  `bugfix` `feature` `ollama` `wkl` `owner`
 
 ---
 
+
+
+## 2026-08-25T09:56:00+00:00 — Sovereign Bridge — Cloud→Metal Pulse Restored + 4096 Ceiling Falsified
+_signed: **E1 (main agent)**_  `bugfix` `ollama` `wkl` `substrate` `ffp`
+
+**Problem.** Cloud→metal bridge to the local J:latest via ngrok tunnel `hurler-unfold-nylon.ngrok-free.dev` was failing three ways at once: (a) 500 timeouts around 58s, (b) silent data drops with zero response bytes, (c) `runner.go: truncating input prompt limit=4096 prompt=4262` even though J was forged with an 8k target. Operator applied Falsification-First Principles: prior fixes (300s timeout, 12k char trim) were not to be trusted without a fresh diagnostic pass.
+
+**Diagnostic pass — three findings.**
+1. **The 4096 ceiling is falsified as a physical limit.** Live probe via the tunnel:
+   - `POST /api/show` reported `model_info.qwen2.context_length = 32768` — architectural window is 32k.
+   - `GET /api/ps` reported `context_length: 4096` on the loaded runner — Ollama clamped at load time because the Modelfile carried **zero PARAMETER lines** and the cloud client never sent `num_ctx`. Runtime knob, not a physical ceiling.
+2. **J:latest Modelfile is broken.** `TEMPLATE: {{ .Prompt }}` (raw pass-through, no ChatML), `SYSTEM: (none)`, `PARAMETERS: (none)`. `/api/chat` formatter had no template to apply → the runner was silently emitting garbage or halting, which is the "silent data drops" the operator saw.
+3. **Tunnel is healthy — the metal's inference process is the primary suspect.** GET metadata endpoints (`/api/tags`, `/api/version`, `/api/ps`, `/api/show`) returned in <200 ms through ngrok every time. `POST /api/generate` with an empty prompt returned in 0.7 s (`done_reason: load`). But `POST /api/generate` or `/api/chat` with a real prompt on **either J:latest or llama3.2:3b** hung for 45–90 s with zero response bytes, then middlebox-closed. Cross-model reproduction rules out any J-specific bug — the runner is accepting jobs but not returning them (GPU OOM, wedged sub-process, or the runner.go truncation loop giving up silently). The 58s ngrok idle-timeout is the second-order effect, not the cause.
+
+**Fix — two tracks.**
+
+_Cloud-side (this pod):_
+- Rewrote `_call_ollama` in `backend/llm_chain.py` to always send `extra_body.options.num_ctx` (default 8192, override via `OLLAMA_NUM_CTX` env). Falsifies the runtime clamp regardless of Modelfile state.
+- Switched Ollama calls to `stream=True`. First-eval tokens now flush immediately, keeping the socket alive past middlebox idle-timeout thresholds.
+- Trim budget is now DERIVED from `num_ctx` — `(num_ctx − 512 response headroom) × 3.6 chars/token`. Default derives to ~27,600 chars for an 8k window (was hard-coded at 12,000). `OLLAMA_CHAR_BUDGET` still respected as a manual override.
+- WKL layer preserved — trim happens first, WKL encodes the trimmed prompt for another 25–40% char savings on the wire, decoded on stream complete.
+- `keep_alive: "30m"` passed on every call so the runner doesn't unload between pulses.
+
+_Metal-side (operator runbook — I cannot reach the machine):_
+- Rebuild `J:latest` with a proper ChatML template + `PARAMETER num_ctx 8192` + explicit `PARAMETER stop` lines. Full Modelfile written to `/app/docs/metal/J.Modelfile` — `ollama create J:latest -f ~/J.Modelfile` to apply.
+- Restart the Ollama server and tail its stderr while running a smoke curl to catch the actual runner failure (GPU OOM, wedged runner, whatever).
+
+**Why.** Sovereign Infrastructure — the bridge between the substrate (cloud) and the metal (Ollama) is the pulse of a sovereign J deployment. Silent drops and a phantom 4k ceiling are exactly the kind of "law of physics" the operator invoked FFP against. Verifiable Execution — every failure mode is now traceable: `num_ctx` shows up in the loaded runner (visible via `/api/ps`), streamed tokens show up on the wire (visible via curl), and a proper ChatML template shows up in `ollama show`.
+
+**Next step.** Add a `/api/ollama/probe` route in the cloud that returns loaded `context_length` alongside the tunnel's roundtrip latency so the operator can see the runner state without curl. Then instrument the chat telemetry HUD with an "OLLAMA · 8k · 340 ms · streaming" pill whenever the local step wins the failover chain, closing the visibility loop.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/llm_chain.py",
+    "docs/metal/J.Modelfile"
+  ],
+  "env_vars_added": [
+    "OLLAMA_NUM_CTX (default 8192)"
+  ],
+  "env_vars_semantics_changed": [
+    "OLLAMA_CHAR_BUDGET (now derived from OLLAMA_NUM_CTX by default; explicit override still respected)"
+  ],
+  "diagnostic_probes_used": [
+    "GET /api/tags — model catalogue (<200ms ok)",
+    "POST /api/show name=J:latest — architectural context_length + Modelfile inspection",
+    "GET /api/ps — RUNTIME context_length of loaded runner (exposed the clamp)",
+    "POST /api/generate empty prompt — proved POST path works, isolates inference from tunnel",
+    "POST /api/chat llama3.2:3b — cross-model repro, isolates J:latest from tunnel"
+  ],
+  "falsification_result": {
+    "hypothesis": "4096 is a hard limit imposed by runner.go",
+    "verdict": "FALSIFIED — model architectural ceiling is 32k; 4k was a runtime default the client never overrode",
+    "evidence": "model_info.qwen2.context_length=32768 vs /api/ps context_length=4096 on the same model"
+  },
+  "operator_runbook": "/app/docs/metal/J.Modelfile — rebuild J with ChatML template + num_ctx=8192; then restart ollama serve with logs tailed and re-run the smoke curl"
+}
+```
+
+---

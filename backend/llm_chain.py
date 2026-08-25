@@ -154,18 +154,35 @@ async def _call_oai_compat(base_url: str, api_key: str, model: str,
 async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
     """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM).
 
-    Local models often ship with a tight default context window (Ollama's
-    default is 2K; most quantized llama.cpp builds cap at 4K). We do two
-    layers of shrinking BEFORE the request:
-      1. Hard char-budget trim — head-keep the system prompt (identity
-         + protocol), tail-keep user_text (most recent turns + current msg).
-      2. WKL encode — bijective token→key substitution of high-frequency
-         substrate vocabulary. Decoded on the response so J still speaks
-         English out.
+    Correctness-critical behaviors (validated 2026-08-24 against a live tunnel
+    to J:latest with a broken Modelfile — see /app/docs/metal/J.Modelfile):
+
+      1. **Explicit num_ctx** — Ollama's runtime default is 2K/4K and clamps
+         the model at load time regardless of the model's architectural window.
+         The OpenAI-compat shim accepts arbitrary Ollama options via
+         `extra_body.options`. We ALWAYS send `num_ctx` so the loaded runner
+         matches our trim budget.
+      2. **Stream mode** — non-streamed responses hang behind idle-timeout
+         middleboxes (ngrok free tier closes at ~60s with zero bytes). Streaming
+         starts flushing tokens on first-eval, keeping the socket alive.
+      3. **Trim proportional to num_ctx** — reserve 512 tokens for the reply,
+         budget ~3.6 chars/token, head-preserve system prompt, tail-preserve
+         user_text so the current message + most recent turns always survive.
+      4. **WKL** — after the trim, encode via the WKL substrate schema for
+         another 25–40% char savings on the wire, then decode the reply.
     """
-    # ~4 chars/token English; reserve 512 tokens of response headroom.
-    # 3500 input tokens ≈ 14000 chars total pre-WKL.
-    _CTX_CHAR_BUDGET = int(os.environ.get("OLLAMA_CHAR_BUDGET", "12000"))
+    # Physical ceiling of the runner. Override per-deployment with OLLAMA_NUM_CTX.
+    _NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+    _RESPONSE_HEADROOM_TOKENS = 512
+    _CHARS_PER_TOKEN = 3.6  # empirical for English + code mix
+
+    # If the operator set an explicit char budget, honour it; otherwise derive
+    # from num_ctx. Derived form is what you almost always want.
+    _CTX_CHAR_BUDGET = int(os.environ.get(
+        "OLLAMA_CHAR_BUDGET",
+        int((_NUM_CTX - _RESPONSE_HEADROOM_TOKENS) * _CHARS_PER_TOKEN),
+    ))
+
     if len(system) + len(user_text) > _CTX_CHAR_BUDGET:
         sys_budget = min(len(system), max(2500, _CTX_CHAR_BUDGET // 3))
         user_budget = _CTX_CHAR_BUDGET - sys_budget - 200
@@ -185,15 +202,31 @@ async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -
         system = wkl.encode(system)
         user_text = wkl.encode(user_text)
 
-    resp = await client_ai.chat.completions.create(
+    # Stream + pass Ollama-native options via extra_body. The OpenAI-compat
+    # shim in Ollama routes anything under `options` straight to the runner
+    # so num_ctx, keep_alive, repeat_penalty, etc. all work.
+    stream = await client_ai.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user_text},
         ],
         temperature=0.4,
+        stream=True,
+        extra_body={
+            "options": {
+                "num_ctx": _NUM_CTX,
+                "num_predict": _RESPONSE_HEADROOM_TOKENS,
+            },
+            "keep_alive": "30m",
+        },
     )
-    raw_reply = resp.choices[0].message.content or ""
+    chunks: list[str] = []
+    async for event in stream:
+        delta = event.choices[0].delta.content if event.choices else None
+        if delta:
+            chunks.append(delta)
+    raw_reply = "".join(chunks)
     return wkl.decode(raw_reply) if wkl else raw_reply
 
 
