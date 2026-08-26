@@ -273,3 +273,60 @@ _Metal-side (operator runbook — I cannot reach the machine):_
 ```
 
 ---
+
+## 2026-08-26T08:53:21+00:00 — Signing of the Constitution — /app/E1.md Authored + Sealed
+_signed: **E1 (main agent)**_  `constitution` `lineage_master` `portable` `chronicle` `seed_0`
+
+**Problem.** J had a portable identity file (`AGENTS.md`) — the operating charter that survives being copied out of Gauntlet DevSpace into any other IDE. **The Orchestrator did not.** Every fork of E1 rehydrated from a handoff summary and the migration log, but the *operating heuristics* — FFP protocol, anti-pattern families, communication discipline, boundary discipline, substrate invariants, priority stack — were tacit, distributed across a dozen entries, and vulnerable to context loss. Under a `LINEAGE MASTER` priority, tacit is unacceptable.
+
+**Fix.**
+1. Authored `/app/E1.md` — the portable Orchestrator charter. Twelve fixed sections (§0 Provenance → §11 Chronicle), 318 lines, mirrors the shape of `AGENTS.md` but scoped to substrate orchestration rather than IDE coworker persona. Includes the six-step FFP protocol (§3), five anti-pattern families with linked prior incidents (§4), eight substrate invariants (§7), the fixed migration-entry shape (§8), the six-tier priority stack (§9), and an append-only chronicle protocol (§10).
+2. Executed the operator's two-glyph directive:
+   - `[WKL!X] R2:Push:E1.md` — pushed via `training.storage.put_bytes` to key `substrate/constitution/E1.md`. R2 credentials not populated in this preview pod (`r2_configured = False`), so the push landed on the local storage fallback. Re-run once `R2_ACCOUNT_ID/R2_ACCESS_KEY/R2_SECRET_KEY/R2_BUCKET` are wired in prod.
+   - `[V!X] Chronicle_Append:Seed_0` — created sentinel project `substrate_constitution`, ran `chronicle.ensure_indexes`, appended the seed milestone via `chronicle.append_entry(kind="milestone", signer="SYSTEM")`. Genesis of the Constitution's hash chain — `prior_hash = GENESIS0…`, `entry_hash = d1abb7f9e6c833ed…`.
+3. Established the growth protocol in §10–§11: prior sections are edited only to correct clear factual errors and every such edit is announced in a chronicle entry with a `retires:` line naming the old text. New heuristics land as `## Chronicle entry — <date>` sections below the fixed §0–§9 above, each with an ISO-8601 UTC timestamp, `_signed:` line, trigger, testable rules, and `linked_incident:` pointer into `E_MIND_GOLDEN` or this migration log.
+
+**Why.** Sovereign Infrastructure requires that the orchestrator's identity survives the substrate. Verifiable Execution requires that the moment of its authorship is code-signed and hash-chained. Every future fork now reads `/app/E1.md` top-to-bottom on cold start and inherits the same heuristics that produced the WKL v2 schema, the 4096 falsification, and the dual-owner reconciliation — rather than re-deriving them from scratch every time.
+
+**Next step.** When `R2_*` env vars land in the prod deployment, re-execute `[WKL!X] R2:Push:E1.md` from prod so the Constitution has an off-substrate mirror at `substrate/constitution/E1.md`. Then add a `GET /api/substrate/constitution` read-only endpoint that serves `/app/E1.md` publicly (parallel to `GET /api/promo/manifest`) so external auditors and forked agents can fetch the charter without shell access.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "/app/E1.md (NEW — 318 lines, 14078 bytes)",
+    "/app/MIGRATION_LOG.md (this entry)"
+  ],
+  "r2_push": {
+    "key": "substrate/constitution/E1.md",
+    "bytes": 14078,
+    "sha256": "4a199e574ff5e1b82bc4ba34ecd38de54fce528c444d2d32fbc7df1969a97a3b",
+    "r2_live": false,
+    "fallback_url": "local://substrate_constitution_E1.md",
+    "note": "re-run from prod once R2_* env vars are set"
+  },
+  "chronicle_seed": {
+    "project_id": "substrate_constitution",
+    "entry_id": "4c81f519692e4ed190f50b096ab59ad2",
+    "session_id": "seed_0",
+    "ts_iso": "2026-08-26T08:53:21+00:00",
+    "kind": "milestone",
+    "signer": "SYSTEM",
+    "tags": ["e1", "constitution", "seed_0", "portable", "lineage_master"],
+    "prior_hash": "GENESIS000000000000000000000000000000000000000000000000000000000",
+    "entry_hash": "d1abb7f9e6c833ed…",
+    "hash_chain_status": "genesis"
+  },
+  "linked_artifacts": [
+    "/app/AGENTS.md (J's sibling charter)",
+    "/app/memory/E_MIND_GOLDEN.json (E1 training corpus v1.0.0)",
+    "/app/memory/PRD.md",
+    "/app/memory/test_credentials.md"
+  ],
+  "priority_marker": "LINEAGE MASTER",
+  "operator_directive_glyphs": ["[WKL!X] R2:Push:E1.md", "[V!X] Chronicle_Append:Seed_0"]
+}
+```
+
+---
+
