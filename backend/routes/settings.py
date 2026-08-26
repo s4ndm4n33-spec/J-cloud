@@ -59,7 +59,7 @@ async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
     """
     provider = (payload.get("provider") or "").strip().lower()
     api_key = (payload.get("api_key") or "").strip()
-    if provider not in {"openai", "anthropic", "gemini"}:
+    if provider not in {"openai", "anthropic", "gemini", "groq", "openrouter"}:
         raise HTTPException(status_code=400, detail="Unsupported provider")
     if not api_key or len(api_key) < 12:
         return {"ok": False, "provider": provider,
@@ -121,6 +121,36 @@ async def validate_key(payload: dict, _user: dict = Depends(get_current_user)):
                             "message": "Google rejected the key. Check the AI Studio key page for status."}
                 return {"ok": False, "provider": provider,
                         "message": f"Gemini returned HTTP {r.status_code}."}
+
+            if provider == "groq":
+                # Groq is OpenAI-compatible — /v1/models works with a bearer.
+                r = await http.get("https://api.groq.com/openai/v1/models",
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                if r.status_code == 200:
+                    ids = [m.get("id", "") for m in r.json().get("data", [])][:5]
+                    return {"ok": True, "provider": provider,
+                            "message": f"Groq live. {len(ids)}+ models visible.",
+                            "models": ids}
+                if r.status_code in (401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "Groq rejected the key. Check console.groq.com/keys."}
+                return {"ok": False, "provider": provider,
+                        "message": f"Groq returned HTTP {r.status_code}."}
+
+            if provider == "openrouter":
+                r = await http.get("https://openrouter.ai/api/v1/auth/key",
+                                   headers={"Authorization": f"Bearer {api_key}"})
+                if r.status_code == 200:
+                    data = r.json().get("data", {})
+                    remain = data.get("limit_remaining")
+                    remain_note = f" · ${remain} remaining" if remain is not None else ""
+                    return {"ok": True, "provider": provider,
+                            "message": f"OpenRouter live{remain_note}."}
+                if r.status_code in (401, 403):
+                    return {"ok": False, "provider": provider,
+                            "message": "OpenRouter rejected the key. Check openrouter.ai/settings/keys."}
+                return {"ok": False, "provider": provider,
+                        "message": f"OpenRouter returned HTTP {r.status_code}."}
         except httpx.HTTPError as e:
             return {"ok": False, "provider": provider,
                     "message": f"Network error reaching {provider}: {e}"}
@@ -157,7 +187,35 @@ async def set_key(payload: dict, user: dict = Depends(get_current_user)):
         return {"ok": True, "provider": provider, "masked": doc["masked"]}
 
     api_key = (payload.get("api_key") or "").strip()
-    if not api_key or len(api_key) < 12:
+    # `preferred_model` is a user-picked slug that overrides the TASK_CHAINS
+    # default when this provider runs. Blank string clears it. Present-but-empty
+    # is a deliberate reset; missing means "don't touch".
+    has_model_field = "preferred_model" in payload
+    preferred_model = (payload.get("preferred_model") or "").strip()
+
+    # Model-only update: user already has a key on file and just wants to
+    # change the preferred model. Don't force re-pasting the secret.
+    if not api_key:
+        existing = await db.user_provider_keys.find_one(
+            {"user_id": user["user_id"], "provider": provider}
+        )
+        if not existing:
+            raise HTTPException(status_code=400, detail="Invalid API key")
+        if not has_model_field:
+            raise HTTPException(status_code=400, detail="Nothing to update")
+        update_op = ({"$set": {"preferred_model": preferred_model,
+                               "updated_at": datetime.now(timezone.utc).isoformat()}}
+                     if preferred_model else
+                     {"$unset": {"preferred_model": ""},
+                      "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
+        await db.user_provider_keys.update_one(
+            {"user_id": user["user_id"], "provider": provider}, update_op
+        )
+        return {"ok": True, "provider": provider,
+                "masked": existing.get("masked", ""),
+                "preferred_model": preferred_model or None}
+
+    if len(api_key) < 12:
         raise HTTPException(status_code=400, detail="Invalid API key")
     doc = {
         "user_id": user["user_id"],
@@ -166,9 +224,6 @@ async def set_key(payload: dict, user: dict = Depends(get_current_user)):
         "masked": mask(api_key),
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    # Optional: user-picked model per BYOK provider (overrides TASK_CHAINS
-    # default when this provider runs). Blank = fall back to default.
-    preferred_model = (payload.get("preferred_model") or "").strip()
     if preferred_model:
         doc["preferred_model"] = preferred_model
     await db.user_provider_keys.update_one(

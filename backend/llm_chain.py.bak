@@ -9,28 +9,13 @@ Centralizes:
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from openai import AsyncOpenAI  # used by Ollama + all OAI-compat providers (Groq, OpenRouter)
 
-from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_IDS
+from deps import db, log, EMERGENT_LLM_KEY, OWNER_USER_ID
 from core.keyvault import decrypt_key
-
-# Safe import for WKLTransformer (handles both package and root backend pathing)
-try:
-    from .wkl_transformer import WKLTransformer
-except ImportError:
-    from wkl_transformer import WKLTransformer
-
-# Lazy or safe init for WKL
-WKL_SCHEMA_PATH = os.environ.get("WKL_SCHEMA_PATH", "/app/backend/wkl_schema.json")
-try:
-    wkl = WKLTransformer(WKL_SCHEMA_PATH) if os.path.exists(WKL_SCHEMA_PATH) else None
-except Exception as e:
-    log.warning(f"WKLTransformer initialization skipped: {e}")
-    wkl = None
 
 OLLAMA_PRESETS = {
     "ollama":     "http://localhost:11434",
@@ -132,13 +117,6 @@ async def _call_oai_compat(base_url: str, api_key: str, model: str,
                            system: str, user_text: str) -> str:
     """Call any OpenAI-compat provider (Groq, OpenRouter, ...)."""
     client_ai = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=90.0)
-    
-    # WKL Handshake (encode if available)
-    if wkl:
-        system += "\n\nYou are now communicating via the Weighted Key Language (WKL). Use the provided schema for all technical and frequent terms."
-        system = wkl.encode(system)
-        user_text = wkl.encode(user_text)
-
     resp = await client_ai.chat.completions.create(
         model=model,
         messages=[
@@ -147,87 +125,24 @@ async def _call_oai_compat(base_url: str, api_key: str, model: str,
         ],
         temperature=0.4,
     )
-    raw_reply = resp.choices[0].message.content or ""
-    return wkl.decode(raw_reply) if wkl else raw_reply
+    return resp.choices[0].message.content or ""
 
 
 async def _call_ollama(base_url: str, model: str, system: str, user_text: str) -> str:
-    """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM).
-
-    Correctness-critical behaviors (validated 2026-08-24 against a live tunnel
-    to J:latest with a broken Modelfile — see /app/docs/metal/J.Modelfile):
-
-      1. **Explicit num_ctx** — Ollama's runtime default is 2K/4K and clamps
-         the model at load time regardless of the model's architectural window.
-         The OpenAI-compat shim accepts arbitrary Ollama options via
-         `extra_body.options`. We ALWAYS send `num_ctx` so the loaded runner
-         matches our trim budget.
-      2. **Stream mode** — non-streamed responses hang behind idle-timeout
-         middleboxes (ngrok free tier closes at ~60s with zero bytes). Streaming
-         starts flushing tokens on first-eval, keeping the socket alive.
-      3. **Trim proportional to num_ctx** — reserve 512 tokens for the reply,
-         budget ~3.6 chars/token, head-preserve system prompt, tail-preserve
-         user_text so the current message + most recent turns always survive.
-      4. **WKL** — after the trim, encode via the WKL substrate schema for
-         another 25–40% char savings on the wire, then decode the reply.
-    """
-    # Physical ceiling of the runner. Override per-deployment with OLLAMA_NUM_CTX.
-    _NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
-    _RESPONSE_HEADROOM_TOKENS = 512
-    _CHARS_PER_TOKEN = 3.6  # empirical for English + code mix
-
-    # If the operator set an explicit char budget, honour it; otherwise derive
-    # from num_ctx. Derived form is what you almost always want.
-    _CTX_CHAR_BUDGET = int(os.environ.get(
-        "OLLAMA_CHAR_BUDGET",
-        int((_NUM_CTX - _RESPONSE_HEADROOM_TOKENS) * _CHARS_PER_TOKEN),
-    ))
-
-    if len(system) + len(user_text) > _CTX_CHAR_BUDGET:
-        sys_budget = min(len(system), max(2500, _CTX_CHAR_BUDGET // 3))
-        user_budget = _CTX_CHAR_BUDGET - sys_budget - 200
-        system = system[:sys_budget]
-        if len(user_text) > user_budget:
-            user_text = ("[…context truncated for local model — showing most recent…]\n"
-                         + user_text[-user_budget:])
-
+    """Call an OpenAI-compatible local server (Ollama, llama.cpp, vLLM)."""
     base = base_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
-    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=300.0)
-
-    # WKL Handshake (encode if available)
-    if wkl:
-        system += "\n\nYou are now communicating via the Weighted Key Language (WKL). Use the provided schema for all technical and frequent terms."
-        system = wkl.encode(system)
-        user_text = wkl.encode(user_text)
-
-    # Stream + pass Ollama-native options via extra_body. The OpenAI-compat
-    # shim in Ollama routes anything under `options` straight to the runner
-    # so num_ctx, keep_alive, repeat_penalty, etc. all work.
-    stream = await client_ai.chat.completions.create(
+    client_ai = AsyncOpenAI(api_key="local", base_url=base, timeout=120.0)
+    resp = await client_ai.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": system},
             {"role": "user",   "content": user_text},
         ],
         temperature=0.4,
-        stream=True,
-        extra_body={
-            "options": {
-                "num_ctx": _NUM_CTX,
-                "num_predict": _RESPONSE_HEADROOM_TOKENS,
-            },
-            "keep_alive": "30m",
-        },
     )
-    chunks: list[str] = []
-    async for event in stream:
-        delta = event.choices[0].delta.content if event.choices else None
-        if delta:
-            chunks.append(delta)
-    raw_reply = "".join(chunks)
-    return wkl.decode(raw_reply) if wkl else raw_reply
+    return resp.choices[0].message.content or ""
 
 
 async def _single_call(api_key_or_cfg: Any, provider: str, model: str,
@@ -239,7 +154,9 @@ async def _single_call(api_key_or_cfg: Any, provider: str, model: str,
             raise RuntimeError("Ollama default model not configured")
         return await _call_ollama(cfg["base_url"], chosen_model, system, user_text)
 
-    # OpenAI-compat providers (Groq, OpenRouter)
+    # OpenAI-compat providers (Groq, OpenRouter) — same wire protocol as
+    # OpenAI, just a different base_url. Kept out of emergentintegrations
+    # so we don't need SDK support for every new upstream.
     if provider in _OAI_COMPAT_BASE_URLS:
         return await _call_oai_compat(
             _OAI_COMPAT_BASE_URLS[provider],
@@ -287,10 +204,12 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
     if private_mode:
         chain = [s for s in chain if s[1] == "ollama"]
 
-    # OWNER LOCK: the shared EMERGENT_LLM_KEY is only usable by the app owner(s).
-    # OWNER_USER_IDS is a frozenset built from a comma-separated env var so a
-    # single user with multiple accounts (phone + laptop) is recognized on both.
-    is_owner = user_id in OWNER_USER_IDS
+    # OWNER LOCK: the shared EMERGENT_LLM_KEY is only usable by the app owner.
+    # Every non-owner MUST bring their own key (BYOK / Ollama). We simply drop
+    # the universal steps from the chain for non-owners so the failover logic
+    # naturally cascades to their BYOK steps. If they have none configured,
+    # the chain will end with `success=False` and meta.needs_keys=True.
+    is_owner = bool(OWNER_USER_ID) and user_id == OWNER_USER_ID
     if not is_owner:
         chain = [s for s in chain if s[0] != "universal"]
 
@@ -310,6 +229,8 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
                                      "status": "skipped", "reason": "byok-missing",
                                      "ms": 0})
                     continue
+                # If the user picked a specific model for this provider, honor
+                # it — otherwise use the chain's default.
                 meta_doc = await _byok_meta(user_id, provider)
                 effective_model = meta_doc.get("preferred_model") or model
             t0 = _time.perf_counter()
@@ -344,10 +265,15 @@ async def chain_call(user_id: str, task: str, system: str, user_text: str,
         "total_ms": int((_time.perf_counter() - chain_started) * 1000),
         "task": task,
     }
+    # Signal to the caller (and the frontend) whether this user still needs
+    # to bring their own key. True when every remaining step was skipped
+    # because BYOK was missing (i.e. non-owner with no cloud key + no ollama).
     if attempts and all(a.get("status") == "skipped" and a.get("reason") == "byok-missing"
                         for a in attempts):
         meta["needs_keys"] = True
     elif not attempts and not is_owner:
+        # Chain was empty after owner-lock (universal stripped, no BYOK) —
+        # nothing was even attempted.
         meta["needs_keys"] = True
     await _record_telemetry(user_id, meta)
     return "", meta

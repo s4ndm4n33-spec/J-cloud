@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash, FloppyDisk, ArrowClockwise } from "@phosphor-icons/react";
+import { Power, ShieldCheck, Eye, EyeSlash, Plus, GearSix, Question, Lock, LockOpen, Trash, FloppyDisk, ArrowClockwise, Shield } from "@phosphor-icons/react";
+import { Link } from "react-router-dom";
 import AmbientPulse from "@/components/AmbientPulse";
 import { useAuth } from "@/context/AuthContext";
 import SettingsModal from "@/components/SettingsModal";
@@ -330,6 +331,16 @@ export default function TopBar({
       >
         <GearSix size={14} weight="bold" />
       </button>
+      {user?.is_owner && (
+        <Link
+          data-testid="admin-link"
+          to="/admin"
+          title="Admin panel · downtime notices, reports, telemetry"
+          className="text-alloy hover:text-amber transition-colors"
+        >
+          <Shield size={14} weight="bold" />
+        </Link>
+      )}
       <div className="flex items-center gap-2">
         {user?.picture ? (
           <img src={user.picture} alt={user.name} className="h-6 w-6 rounded-full" />

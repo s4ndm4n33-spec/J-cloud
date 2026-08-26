@@ -75,7 +75,13 @@ async def auth_session(payload: dict, response: Response):
 
 @router.get("/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):
-    return user
+    # Return the DB record + a computed `is_owner` flag so the frontend can
+    # gate owner-only UI (admin link in TopBar, ownership-sensitive controls)
+    # without every component having to hit /api/knowledge/stats for the flag.
+    import os as _os
+    from deps import is_owner as _is_owner
+    _os.environ.get("OWNER_USER_ID", "")  # touch to preserve legacy log semantics
+    return {**user, "is_owner": _is_owner(user.get("user_id", ""))}
 
 
 @router.post("/auth/logout")

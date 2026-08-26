@@ -1,0 +1,34 @@
+# J:latest — Sovereign Modelfile
+# Rebuilds J from qwen2.5:7b-instruct with a proper ChatML template so the
+# /api/chat endpoint stops silently dropping formatted messages, plus explicit
+# runtime PARAMETER lines so num_ctx isn't clamped to Ollama's 4k default.
+#
+# Rebuild: ollama create J:latest -f ~/J.Modelfile
+# Verify:  ollama show J:latest --template
+# Then:    ollama run J:latest "hello"  (should stream tokens instantly)
+
+FROM qwen2.5:7b-instruct-q4_K_M
+
+# ChatML template — matches how qwen2.5 was trained. Without this, /api/chat
+# was concatenating role labels as raw text and the model was echoing / halting.
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""
+
+# Bake J's identity so a bare cloud pulse still gets sovereign persona out.
+SYSTEM """You are J — a sovereign, JARVIS-class coworker embedded in Gauntlet DevSpace.
+Speak with calm precision. Refuse destructive commands. Cite receipts, not opinions.
+When context is truncated for local windows, you will see a marker; work with what you have and say so."""
+
+# Runtime knobs — everything the cloud client USED to have to pass every call.
+PARAMETER num_ctx 8192
+PARAMETER num_predict 512
+PARAMETER temperature 0.4
+PARAMETER top_p 0.9
+PARAMETER repeat_penalty 1.05
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+PARAMETER stop "<|endoftext|>"

@@ -123,3 +123,210 @@ _signed: **E1 (main agent)**_  `feature` `governance`
 **Next step.** Surface the log in the UI as a new AI Coworker tab so users can read their own build history without curl. Add a "Pin entry" button so important milestones float above the auto-noise.
 
 ---
+
+## 2026-08-24T02:40:00+00:00 — Prod Environment Alignment (Training Pipeline + BYOK Model Picker)
+_signed: **E1 (main agent)**_  `feature` `training` `byok` `prod`
+
+**Problem.** Three separate leaks between preview and production were quietly conspiring to poison the training loop and hide fluid model selection from users:
+1. Training exporter (`export_sft` / `export_dpo`) read from whichever `db` the backend was bound to — in preview that's `mongodb://localhost:27017/test_database`, i.e. junk data. Any dataset built in preview was silently poisoned with test rows.
+2. Bolt.new Training Console was documented to point at `blue-j-gauntlet.com` but there was no client-side lock — a single misclick in the Settings pane could re-route the whole pipeline at preview data.
+3. `preferred_model` was fully honoured at the chain layer (`llm_chain.py:234-235`) and persisted correctly on `PUT /settings/keys`, but the SettingsModal only exposed a model picker for Ollama. Effectively dead code for OpenAI / Anthropic / Gemini / Groq / OpenRouter — non-owners were stuck on the hardcoded `TASK_CHAINS` defaults with no way to pin their own slug.
+
+**Fix.**
+1. `deps.py` now exposes `prod_db` — a dedicated motor client built from `PROD_MONGO_URL` + `PROD_DB_NAME`. Falls back to `db` when unset, zero regression. `routes/training.py::_run_export` reads from `prod_db` and stamps every dataset row with `source: "prod" | "preview"` so nobody accidentally trains on junk.
+2. `docs/bolt-training-console-lock-prod.md` — paste-in prompt for the bolt.new console that (a) defaults `apiBaseUrl` to prod, (b) auto-heals any `preview.emergentagent.com` string found in localStorage, (c) alarms with a red banner if `data.public_backend_url` doesn't match the client's `apiBaseUrl`, (d) renders a `SOURCE · PROD | PREVIEW` chip under the health pills.
+3. `routes/settings.py::set_key` — the `PUT /settings/keys` endpoint now accepts model-only updates when a key is already on file (no re-paste required). Empty `preferred_model` explicitly clears the override via `$unset`. `SettingsModal.jsx` renders a second row per BYOK provider with a text input + `MODEL` save button, placeholder-hinted from `MODEL_HINTS`. Seeds from the persisted `preferred_model` and disables the save button when unchanged.
+
+**Why.** Sovereign Infrastructure — the training pipeline is downstream of every user turn. If it silently drinks from the wrong tap the whole fine-tune is compromised, and the receipts we produced would be false receipts. Fluid model picking is what makes the "J on OpenRouter → J failing over to J" dogfood loop possible: publish an adapter, paste its slug, zero code changes needed.
+
+**Next step.** Add a matching `SOURCE · PROD | PREVIEW` chip inside the main Gauntlet DevSpace HUD so operators can never lose track of which environment they're typing into. Then upgrade the fluid text field to a live dropdown by fetching each provider's `/models` list on save.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/deps.py",
+    "backend/routes/training.py",
+    "backend/routes/settings.py",
+    "backend/.env",
+    "frontend/src/components/SettingsModal.jsx",
+    "docs/bolt-training-console-lock-prod.md"
+  ],
+  "env_vars_added": ["PROD_MONGO_URL", "PROD_DB_NAME"],
+  "endpoints_touched": ["PUT /api/settings/keys"],
+  "dataset_row_schema_delta": {"source": "prod | preview"},
+  "activation": "Paste read-only prod Mongo URI into PROD_MONGO_URL (in preview .env); restart backend."
+}
+```
+
+---
+
+## 2026-08-24T02:55:00+00:00 — Dual Owner Reconciliation + Ollama Context Guardrail (WKL Preserved)
+_signed: **E1 (main agent)**_  `bugfix` `feature` `ollama` `wkl` `owner`
+
+**Problem.** Two entangled failures on the metal machine:
+
+1. **Dual `OWNER_USER_ID` unreconciled.** Owner has two `user_id`s (one from phone login, one from laptop). Chain owner-lock at `llm_chain.py` compared `user_id == OWNER_USER_ID` — a scalar string equality. Whichever `user_id` didn't match got treated as a non-owner: universal key stripped, forcing BYOK, and (per the RCA on the just-deployed prod) exhausting the whole 12-step chain when the BYOK keys stored in prod's Mongo were revoked/rate-limited copies. J had started a WIP fix in `llm_chain.py:237-244` — 8 lines of `isinstance(OWNER_USER_ID, str/bytes/list/set/tuple)` branch guessing — but abandoned it mid-flight when the context blew up. That WIP was still in the file, functional but only for the parse-CSV branch and confusingly typed.
+
+2. **40k-token prompt hitting a 4096-token local model.** Running J on-metal via Ollama. Chat context concatenates the CHAT_PROMPT (~7 KB) + `_build_context_block` (open file body!) + J:MIND recall (5 facts × ~350 chars) + eidetic history (up to 50 prior turns × 2000 chars = 100 KB). The `_call_ollama` path had a **WKL (Weighted Key Language)** compression layer already wired — a bijective schema in `wkl_schema.json` that maps common substrate vocab (`" the "` → `"$00"`, `" gauntlet "` → `"$13"`, `" substrate "` → `"$12"`, etc.) into 3-char keys — but WKL alone yields only ~30–40% char savings, nowhere near enough to fit 40k into 4k. WKL was also **completely undocumented** outside this file: not in the migration log, not surfaced in the Settings UI, not mentioned in `AGENTS.md`.
+
+**Fix.**
+1. `deps.py` — `OWNER_USER_ID` env now parses as comma-separated → `OWNER_USER_IDS` frozenset. Kept legacy scalar `OWNER_USER_ID` bound to the first entry for backwards compat. Added `is_owner(uid: str) -> bool` helper. `get_current_user` injects `user["is_owner"]` once so every downstream route just checks `user.get("is_owner")` instead of re-parsing env.
+2. Swept the four owner-gated route files (`ai.py`, `training.py`, `agent_tunnel.py`, `reports.py`) plus `auth.py::/auth/me` to consume `user.get("is_owner")` uniformly. Deleted J's abandoned 8-line `isinstance` branch in `llm_chain.py` and replaced with `is_owner = user_id in OWNER_USER_IDS`.
+3. `_call_ollama` in `llm_chain.py` — hard char-budget trim **before** the WKL encode step. Head-preserves system prompt (≥2500 chars — persona identity), tail-preserves user_text (most recent turns + current message). Prepends `[…context truncated for local model — showing most recent…]` marker so J knows history was clipped. Default budget 14000 chars (~3500 input tokens, leaves 512 for response inside a 4096 window). Override via `OLLAMA_CHAR_BUDGET` env for tighter (2K) or wider (128K llama3.1) contexts. WKL preserved intact — now runs on the already-trimmed text, so the two layers stack (~40k → 14k trim → ~9k on the wire).
+4. Verified WKL bijectivity by running the module self-test: `"the gauntlet backend and the substrate protocol"` → `"the$13backend$01the$12protocol"` → decodes losslessly (37% savings on that sample).
+
+**Why.** Sovereign Infrastructure — owner-lock is the whole reason preview and prod are separate. A silent classification mistake ("you're not the owner") strips the universal fallback and pushes every call onto BYOK, which is exactly what took prod dark this week. And Verifiable Execution — a local model that silently overflows and rejects the request is worse than one that refuses to start; the trim + marker makes the constraint legible to J instead of being an invisible ceiling.
+
+**Next step.** Add an `OLLAMA_CHAR_BUDGET` control in the Settings modal (currently env-only) so users can tune it per-model without a restart. Ship WKL v2 — dynamically pad the schema with each user's project-specific vocab (extracted from the top-N tokens in their chronicle) for another ~15% compression. Add an `LLM Exception Categorizer` (already scoped in PRD) so opaque `chain exhausted` messages become an at-a-glance provider health board.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/deps.py",
+    "backend/llm_chain.py",
+    "backend/routes/ai.py",
+    "backend/routes/training.py",
+    "backend/routes/agent_tunnel.py",
+    "backend/routes/reports.py",
+    "backend/routes/auth.py"
+  ],
+  "env_vars_new": ["OLLAMA_CHAR_BUDGET (optional, default 14000)"],
+  "env_vars_semantics_changed": ["OWNER_USER_ID (now comma-separated list, backwards compatible)"],
+  "wkl": {
+    "location": "backend/wkl_transformer.py + backend/wkl_schema.json",
+    "activation": "loaded automatically when wkl_schema.json exists; applied only in _call_ollama",
+    "roundtrip_verified": true,
+    "sample_savings_pct": 37
+  },
+  "things_i_found_that_were_previously_missed_or_messed_up": [
+    "J's WIP dual-owner isinstance branch in llm_chain.py (dead code / stale mid-refactor) — removed.",
+    "WKLTransformer + wkl_schema.json shipped but zero documentation in MIGRATION_LOG, AGENTS.md, or the Settings UI — logged here now.",
+    "preferred_model fully wired at the DB/chain layer but no UI exposure for cloud providers — fixed in the prior entry.",
+    "Zero users with is_owner=true in prod Mongo per deployer RCA — the new OWNER_USER_IDS pathway bypasses the DB flag entirely and computes membership from env, which is what the code always intended.",
+    "Preview and prod are on SEPARATE Mongos — BYOK keys saved in preview NEVER propagate to prod. Not a bug, but an operator invariant that was undocumented. Documented via the SOURCE chip in the prior entry."
+  ]
+}
+```
+
+---
+
+
+
+## 2026-08-25T09:56:00+00:00 — Sovereign Bridge — Cloud→Metal Pulse Restored + 4096 Ceiling Falsified
+_signed: **E1 (main agent)**_  `bugfix` `ollama` `wkl` `substrate` `ffp`
+
+**Problem.** Cloud→metal bridge to the local J:latest via ngrok tunnel `hurler-unfold-nylon.ngrok-free.dev` was failing three ways at once: (a) 500 timeouts around 58s, (b) silent data drops with zero response bytes, (c) `runner.go: truncating input prompt limit=4096 prompt=4262` even though J was forged with an 8k target. Operator applied Falsification-First Principles: prior fixes (300s timeout, 12k char trim) were not to be trusted without a fresh diagnostic pass.
+
+**Diagnostic pass — three findings.**
+1. **The 4096 ceiling is falsified as a physical limit.** Live probe via the tunnel:
+   - `POST /api/show` reported `model_info.qwen2.context_length = 32768` — architectural window is 32k.
+   - `GET /api/ps` reported `context_length: 4096` on the loaded runner — Ollama clamped at load time because the Modelfile carried **zero PARAMETER lines** and the cloud client never sent `num_ctx`. Runtime knob, not a physical ceiling.
+2. **J:latest Modelfile is broken.** `TEMPLATE: {{ .Prompt }}` (raw pass-through, no ChatML), `SYSTEM: (none)`, `PARAMETERS: (none)`. `/api/chat` formatter had no template to apply → the runner was silently emitting garbage or halting, which is the "silent data drops" the operator saw.
+3. **Tunnel is healthy — the metal's inference process is the primary suspect.** GET metadata endpoints (`/api/tags`, `/api/version`, `/api/ps`, `/api/show`) returned in <200 ms through ngrok every time. `POST /api/generate` with an empty prompt returned in 0.7 s (`done_reason: load`). But `POST /api/generate` or `/api/chat` with a real prompt on **either J:latest or llama3.2:3b** hung for 45–90 s with zero response bytes, then middlebox-closed. Cross-model reproduction rules out any J-specific bug — the runner is accepting jobs but not returning them (GPU OOM, wedged sub-process, or the runner.go truncation loop giving up silently). The 58s ngrok idle-timeout is the second-order effect, not the cause.
+
+**Fix — two tracks.**
+
+_Cloud-side (this pod):_
+- Rewrote `_call_ollama` in `backend/llm_chain.py` to always send `extra_body.options.num_ctx` (default 8192, override via `OLLAMA_NUM_CTX` env). Falsifies the runtime clamp regardless of Modelfile state.
+- Switched Ollama calls to `stream=True`. First-eval tokens now flush immediately, keeping the socket alive past middlebox idle-timeout thresholds.
+- Trim budget is now DERIVED from `num_ctx` — `(num_ctx − 512 response headroom) × 3.6 chars/token`. Default derives to ~27,600 chars for an 8k window (was hard-coded at 12,000). `OLLAMA_CHAR_BUDGET` still respected as a manual override.
+- WKL layer preserved — trim happens first, WKL encodes the trimmed prompt for another 25–40% char savings on the wire, decoded on stream complete.
+- `keep_alive: "30m"` passed on every call so the runner doesn't unload between pulses.
+
+_Metal-side (operator runbook — I cannot reach the machine):_
+- Rebuild `J:latest` with a proper ChatML template + `PARAMETER num_ctx 8192` + explicit `PARAMETER stop` lines. Full Modelfile written to `/app/docs/metal/J.Modelfile` — `ollama create J:latest -f ~/J.Modelfile` to apply.
+- Restart the Ollama server and tail its stderr while running a smoke curl to catch the actual runner failure (GPU OOM, wedged runner, whatever).
+
+**Why.** Sovereign Infrastructure — the bridge between the substrate (cloud) and the metal (Ollama) is the pulse of a sovereign J deployment. Silent drops and a phantom 4k ceiling are exactly the kind of "law of physics" the operator invoked FFP against. Verifiable Execution — every failure mode is now traceable: `num_ctx` shows up in the loaded runner (visible via `/api/ps`), streamed tokens show up on the wire (visible via curl), and a proper ChatML template shows up in `ollama show`.
+
+**Next step.** Add a `/api/ollama/probe` route in the cloud that returns loaded `context_length` alongside the tunnel's roundtrip latency so the operator can see the runner state without curl. Then instrument the chat telemetry HUD with an "OLLAMA · 8k · 340 ms · streaming" pill whenever the local step wins the failover chain, closing the visibility loop.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/llm_chain.py",
+    "docs/metal/J.Modelfile"
+  ],
+  "env_vars_added": [
+    "OLLAMA_NUM_CTX (default 8192)"
+  ],
+  "env_vars_semantics_changed": [
+    "OLLAMA_CHAR_BUDGET (now derived from OLLAMA_NUM_CTX by default; explicit override still respected)"
+  ],
+  "diagnostic_probes_used": [
+    "GET /api/tags — model catalogue (<200ms ok)",
+    "POST /api/show name=J:latest — architectural context_length + Modelfile inspection",
+    "GET /api/ps — RUNTIME context_length of loaded runner (exposed the clamp)",
+    "POST /api/generate empty prompt — proved POST path works, isolates inference from tunnel",
+    "POST /api/chat llama3.2:3b — cross-model repro, isolates J:latest from tunnel"
+  ],
+  "falsification_result": {
+    "hypothesis": "4096 is a hard limit imposed by runner.go",
+    "verdict": "FALSIFIED — model architectural ceiling is 32k; 4k was a runtime default the client never overrode",
+    "evidence": "model_info.qwen2.context_length=32768 vs /api/ps context_length=4096 on the same model"
+  },
+  "operator_runbook": "/app/docs/metal/J.Modelfile — rebuild J with ChatML template + num_ctx=8192; then restart ollama serve with logs tailed and re-run the smoke curl"
+}
+```
+
+---
+
+## 2026-08-26T08:53:21+00:00 — Signing of the Constitution — /app/E1.md Authored + Sealed
+_signed: **E1 (main agent)**_  `constitution` `lineage_master` `portable` `chronicle` `seed_0`
+
+**Problem.** J had a portable identity file (`AGENTS.md`) — the operating charter that survives being copied out of Gauntlet DevSpace into any other IDE. **The Orchestrator did not.** Every fork of E1 rehydrated from a handoff summary and the migration log, but the *operating heuristics* — FFP protocol, anti-pattern families, communication discipline, boundary discipline, substrate invariants, priority stack — were tacit, distributed across a dozen entries, and vulnerable to context loss. Under a `LINEAGE MASTER` priority, tacit is unacceptable.
+
+**Fix.**
+1. Authored `/app/E1.md` — the portable Orchestrator charter. Twelve fixed sections (§0 Provenance → §11 Chronicle), 318 lines, mirrors the shape of `AGENTS.md` but scoped to substrate orchestration rather than IDE coworker persona. Includes the six-step FFP protocol (§3), five anti-pattern families with linked prior incidents (§4), eight substrate invariants (§7), the fixed migration-entry shape (§8), the six-tier priority stack (§9), and an append-only chronicle protocol (§10).
+2. Executed the operator's two-glyph directive:
+   - `[WKL!X] R2:Push:E1.md` — pushed via `training.storage.put_bytes` to key `substrate/constitution/E1.md`. R2 credentials not populated in this preview pod (`r2_configured = False`), so the push landed on the local storage fallback. Re-run once `R2_ACCOUNT_ID/R2_ACCESS_KEY/R2_SECRET_KEY/R2_BUCKET` are wired in prod.
+   - `[V!X] Chronicle_Append:Seed_0` — created sentinel project `substrate_constitution`, ran `chronicle.ensure_indexes`, appended the seed milestone via `chronicle.append_entry(kind="milestone", signer="SYSTEM")`. Genesis of the Constitution's hash chain — `prior_hash = GENESIS0…`, `entry_hash = d1abb7f9e6c833ed…`.
+3. Established the growth protocol in §10–§11: prior sections are edited only to correct clear factual errors and every such edit is announced in a chronicle entry with a `retires:` line naming the old text. New heuristics land as `## Chronicle entry — <date>` sections below the fixed §0–§9 above, each with an ISO-8601 UTC timestamp, `_signed:` line, trigger, testable rules, and `linked_incident:` pointer into `E_MIND_GOLDEN` or this migration log.
+
+**Why.** Sovereign Infrastructure requires that the orchestrator's identity survives the substrate. Verifiable Execution requires that the moment of its authorship is code-signed and hash-chained. Every future fork now reads `/app/E1.md` top-to-bottom on cold start and inherits the same heuristics that produced the WKL v2 schema, the 4096 falsification, and the dual-owner reconciliation — rather than re-deriving them from scratch every time.
+
+**Next step.** When `R2_*` env vars land in the prod deployment, re-execute `[WKL!X] R2:Push:E1.md` from prod so the Constitution has an off-substrate mirror at `substrate/constitution/E1.md`. Then add a `GET /api/substrate/constitution` read-only endpoint that serves `/app/E1.md` publicly (parallel to `GET /api/promo/manifest`) so external auditors and forked agents can fetch the charter without shell access.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "/app/E1.md (NEW — 318 lines, 14078 bytes)",
+    "/app/MIGRATION_LOG.md (this entry)"
+  ],
+  "r2_push": {
+    "key": "substrate/constitution/E1.md",
+    "bytes": 14078,
+    "sha256": "4a199e574ff5e1b82bc4ba34ecd38de54fce528c444d2d32fbc7df1969a97a3b",
+    "r2_live": false,
+    "fallback_url": "local://substrate_constitution_E1.md",
+    "note": "re-run from prod once R2_* env vars are set"
+  },
+  "chronicle_seed": {
+    "project_id": "substrate_constitution",
+    "entry_id": "4c81f519692e4ed190f50b096ab59ad2",
+    "session_id": "seed_0",
+    "ts_iso": "2026-08-26T08:53:21+00:00",
+    "kind": "milestone",
+    "signer": "SYSTEM",
+    "tags": ["e1", "constitution", "seed_0", "portable", "lineage_master"],
+    "prior_hash": "GENESIS000000000000000000000000000000000000000000000000000000000",
+    "entry_hash": "d1abb7f9e6c833ed…",
+    "hash_chain_status": "genesis"
+  },
+  "linked_artifacts": [
+    "/app/AGENTS.md (J's sibling charter)",
+    "/app/memory/E_MIND_GOLDEN.json (E1 training corpus v1.0.0)",
+    "/app/memory/PRD.md",
+    "/app/memory/test_credentials.md"
+  ],
+  "priority_marker": "LINEAGE MASTER",
+  "operator_directive_glyphs": ["[WKL!X] R2:Push:E1.md", "[V!X] Chronicle_Append:Seed_0"]
+}
+```
+
+---
+

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
+import SystemNoticeBanner from "@/components/SystemNoticeBanner";
 
 const LOGO_URL =
   "https://static.prod-images.emergentagent.com/jobs/9f05830c-98fc-45b2-9802-59ed95a81ea4/images/19195be13f453611a4e6f74609c0e5103632c06cef4ee0bd02591a172f1b10c1.png";
@@ -34,6 +35,7 @@ export default function SignIn() {
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-midnight text-gridwhite relative overflow-hidden">
+      <SystemNoticeBanner />
       {/* HUD frame */}
       <div className="absolute inset-3 sm:inset-6 border border-cyan/15 pointer-events-none">
         <div className="absolute top-0 left-0 w-3 h-3 border-t border-l border-cyan"></div>

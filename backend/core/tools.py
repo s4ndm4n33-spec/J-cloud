@@ -95,6 +95,20 @@ TOOL_SPEC: list[dict[str, Any]] = [
      "args": {"html_path": "string (relative path to a .html file)", "note": "optional string explaining what changed (max 400)"}},
     {"name": "done", "desc": "Signal that the task is complete. The 'summary' goes to the user.",
      "args": {"summary": "string"}},
+    # Agent tunnel — cross-pod ticket bus between prev-J and prod-J.
+    # Only use when the user explicitly asks you to file / check / act on
+    # a ticket. NEVER use apply_ticket_diff unattended — humans still gate deploys.
+    {"name": "tunnel_open", "desc": "File a ticket to the OTHER J (prev↔prod). Use when the user says 'ask prod-J', 'file a bug for the other pod', 'send this fix over'. Include a unified diff in `code_diff` if you have one. Priority defaults to p1.",
+     "args": {"to": "'prev-j' | 'prod-j'", "kind": "'bug' | 'proposal' | 'question'",
+              "title": "string (max 200)", "body": "string (markdown, max 20000)",
+              "code_diff": "optional unified diff", "files_touched": "optional list of paths",
+              "priority": "'p0' | 'p1' | 'p2' (default p1)"}},
+    {"name": "tunnel_inbox", "desc": "List tickets addressed to me across environments (excludes deployed/rejected by default). Use at the start of a session or when the user asks 'what's in the tunnel'.",
+     "args": {"status": "optional status filter", "limit": "int (default 20)"}},
+    {"name": "tunnel_reply", "desc": "Reply to a ticket by ID. Threads under the same parent. Use to answer prod-J's questions, push back on a proposed diff, or share a refined version.",
+     "args": {"ticket_id": "string", "body": "string", "code_diff": "optional unified diff"}},
+    {"name": "tunnel_status", "desc": "Advance a ticket's status. Use `in_progress` when you start work; `rejected` if the proposal is bad; never mark `ready_for_deploy` yourself — that's automatic from `tunnel_apply` after tests pass.",
+     "args": {"ticket_id": "string", "status": "'open' | 'in_progress' | 'rejected'", "note": "optional string"}},
 ]
 
 
@@ -820,6 +834,82 @@ async def _tool_done(ctx: ToolContext, summary: str = "") -> dict:
     return {"_done": True, "summary": summary}
 
 
+async def _tool_tunnel_open(ctx: ToolContext, to: str, kind: str, title: str,
+                            body: str = "", code_diff: str | None = None,
+                            files_touched: list | None = None,
+                            priority: str = "p1") -> dict:
+    """File a cross-pod ticket. Only owner can drive the tunnel."""
+    from . import agent_tunnel as at
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "db not wired into ctx"}
+    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    if not (owner_id and ctx.user_id == owner_id):
+        return {"error": "agent tunnel is owner-only"}
+    r = await at.open_ticket(
+        db_ref, to=to, kind=kind, title=title, body=body,
+        code_diff=code_diff, files_touched=files_touched or [],
+        priority=priority,
+    )
+    if r.get("error"):
+        return r
+    t = r["ticket"]
+    return {"ok": True, "ticket_id": t["ticket_id"], "from": t["from"],
+            "to": t["to"], "status": t["status"]}
+
+
+async def _tool_tunnel_inbox(ctx: ToolContext, status: str | None = None,
+                             limit: int = 20) -> dict:
+    from . import agent_tunnel as at
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "db not wired into ctx"}
+    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    if not (owner_id and ctx.user_id == owner_id):
+        return {"error": "agent tunnel is owner-only"}
+    docs = await at.check_inbox(db_ref, status=status, limit=min(int(limit), 50))
+    return {"self": at._SELF, "count": len(docs),
+            "tickets": [
+                {"ticket_id": d["ticket_id"], "from": d["from"], "kind": d["kind"],
+                 "title": d["title"], "priority": d.get("priority"),
+                 "status": d["status"], "escalate": d.get("escalate", False),
+                 "updated_ts": d.get("updated_ts")}
+                for d in docs
+            ]}
+
+
+async def _tool_tunnel_reply(ctx: ToolContext, ticket_id: str, body: str,
+                             code_diff: str | None = None) -> dict:
+    from . import agent_tunnel as at
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "db not wired into ctx"}
+    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    if not (owner_id and ctx.user_id == owner_id):
+        return {"error": "agent tunnel is owner-only"}
+    r = await at.reply_to(db_ref, ticket_id, body=body, code_diff=code_diff)
+    if r.get("error"):
+        return r
+    return {"ok": True, "reply_ticket_id": r["ticket"]["ticket_id"]}
+
+
+async def _tool_tunnel_status(ctx: ToolContext, ticket_id: str, status: str,
+                              note: str | None = None) -> dict:
+    from . import agent_tunnel as at
+    db_ref = getattr(ctx, "db", None)
+    if db_ref is None:
+        return {"error": "db not wired into ctx"}
+    owner_id = os.environ.get("OWNER_USER_ID", "").strip()
+    if not (owner_id and ctx.user_id == owner_id):
+        return {"error": "agent tunnel is owner-only"}
+    # J is NOT allowed to self-mark ready_for_deploy or deployed via this tool —
+    # those transitions come from apply_diff (guarded) or the human.
+    if status in {"ready_for_deploy", "deployed"}:
+        return {"error": f"status '{status}' cannot be set by J directly — "
+                         f"use apply-diff endpoint (auto-sets after tests pass)"}
+    return await at.mark_status(db_ref, ticket_id, new_status=status, note=note)
+
+
 HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "create_file": _tool_create_file,
     "write_file": _tool_write_file,
@@ -853,6 +943,10 @@ HANDLERS: dict[str, Callable[..., Awaitable[dict]]] = {
     "propose_chronicle_entry": _tool_propose_chronicle_entry,
     "screenshot_preview": _tool_screenshot_preview,
     "done": _tool_done,
+    "tunnel_open": _tool_tunnel_open,
+    "tunnel_inbox": _tool_tunnel_inbox,
+    "tunnel_reply": _tool_tunnel_reply,
+    "tunnel_status": _tool_tunnel_status,
 }
 
 

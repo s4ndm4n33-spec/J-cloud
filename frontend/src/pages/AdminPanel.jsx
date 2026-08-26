@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Warning, ArrowClockwise, ArrowLeft } from "@phosphor-icons/react";
-import { listAdminFlags, adminFlagsSummary } from "@/lib/api";
+import { listAdminFlags, adminFlagsSummary, getSystemNotice, setSystemNotice, clearSystemNotice } from "@/lib/api";
 import ReportsInbox from "@/pages/ReportsInbox";
 
 const CATEGORY_STYLES = {
@@ -191,7 +191,155 @@ export default function AdminPanel() {
           </div>
         )}
       </section>
+
+      <DowntimeNotice />
     </div>
+  );
+}
+
+/**
+ * Owner-only control to post/clear a top-of-screen banner. Used to warn
+ * every user before a redeploy that will wipe workspaces (or to announce
+ * anything else that affects everyone at once).
+ */
+function DowntimeNotice() {
+  const [current, setCurrent] = useState(null);
+  const [message, setMessage] = useState("");
+  const [severity, setSeverity] = useState("warn");
+  const [minutes, setMinutes] = useState("");   // countdown minutes; blank = no expiry
+  const [busy, setBusy] = useState(false);
+  const [flash, setFlash] = useState(null);
+
+  const load = async () => {
+    try {
+      const r = await getSystemNotice();
+      setCurrent(r?.notice || null);
+    } catch { /* silent */ }
+  };
+  useEffect(() => { load(); }, []);
+
+  async function handlePost() {
+    if (!message.trim() || busy) return;
+    setBusy(true); setFlash(null);
+    try {
+      const expiresAt = minutes && Number(minutes) > 0
+        ? new Date(Date.now() + Number(minutes) * 60_000).toISOString()
+        : undefined;
+      await setSystemNotice({ message: message.trim(), severity, expires_at: expiresAt });
+      setFlash("// posted — banner is live for every user");
+      setMessage("");
+      setMinutes("");
+      load();
+    } catch (e) {
+      setFlash(`// post failed: ${e?.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); setTimeout(() => setFlash(null), 3500); }
+  }
+
+  async function handleClear() {
+    if (busy) return;
+    setBusy(true); setFlash(null);
+    try {
+      await clearSystemNotice();
+      setFlash("// cleared");
+      load();
+    } catch (e) {
+      setFlash(`// clear failed: ${e?.response?.data?.detail || e.message}`);
+    } finally { setBusy(false); setTimeout(() => setFlash(null), 3500); }
+  }
+
+  return (
+    <section
+      data-testid="admin-downtime-notice"
+      className="panel border border-cyan/20 bg-void/50 mt-6 p-5"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-[0.65rem] tracking-widest text-cyan mb-1">SYSTEM NOTICE</h2>
+          <p className="text-alloy text-xs">
+            Warn every user before a redeploy or scheduled outage. Shows as a top banner on every page.
+          </p>
+        </div>
+        {current ? (
+          <span
+            className="font-mono text-[0.55rem] tracking-widest text-amber bg-amber/10 border border-amber/40 px-2 py-1"
+            data-testid="downtime-current-badge"
+          >
+            ACTIVE
+          </span>
+        ) : (
+          <span className="font-mono text-[0.55rem] tracking-widest text-alloy border border-alloy/30 px-2 py-1">
+            NONE
+          </span>
+        )}
+      </div>
+
+      {current && (
+        <div
+          className="mb-4 border border-amber/40 bg-amber/10 text-amber text-xs font-mono px-3 py-2"
+          data-testid="downtime-current-preview"
+        >
+          <div className="tracking-wide">{current.message}</div>
+          <div className="text-alloy/70 mt-1">
+            severity: {current.severity}{" "}
+            {current.expires_at && `· expires ${new Date(current.expires_at).toLocaleString()}`}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-2 items-start">
+        <input
+          data-testid="downtime-message-input"
+          type="text"
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          placeholder="e.g. Redeploy in 5m — save your work"
+          maxLength={400}
+          className="w-full bg-void border border-cyan/30 text-gridwhite text-xs font-mono px-3 py-2 focus:outline-none focus:border-cyan"
+        />
+        <select
+          data-testid="downtime-severity-select"
+          value={severity}
+          onChange={(e) => setSeverity(e.target.value)}
+          className="bg-void border border-cyan/30 text-gridwhite text-xs font-mono px-2 py-2 focus:outline-none focus:border-cyan"
+        >
+          <option value="info">info</option>
+          <option value="warn">warn</option>
+          <option value="critical">critical</option>
+        </select>
+        <input
+          data-testid="downtime-expiry-minutes"
+          type="number"
+          min="0"
+          value={minutes}
+          onChange={(e) => setMinutes(e.target.value)}
+          placeholder="minutes"
+          title="Auto-clear after N minutes (leave blank to keep until you clear it)"
+          className="w-24 bg-void border border-cyan/30 text-gridwhite text-xs font-mono px-2 py-2 focus:outline-none focus:border-cyan"
+        />
+      </div>
+
+      <div className="flex items-center gap-2 mt-3">
+        <button
+          data-testid="downtime-post-button"
+          onClick={handlePost}
+          disabled={busy || !message.trim()}
+          className="px-3 py-1.5 border border-cyan/50 text-cyan text-[0.65rem] font-display tracking-widest hover:bg-cyan/10 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          POST NOTICE
+        </button>
+        <button
+          data-testid="downtime-clear-button"
+          onClick={handleClear}
+          disabled={busy || !current}
+          className="px-3 py-1.5 border border-red-500/40 text-red-400 text-[0.65rem] font-display tracking-widest hover:bg-red-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          CLEAR
+        </button>
+        {flash && (
+          <span className="text-alloy text-xs font-mono ml-2">{flash}</span>
+        )}
+      </div>
+    </section>
   );
 }
 

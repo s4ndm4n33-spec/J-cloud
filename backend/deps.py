@@ -25,12 +25,35 @@ DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 OWNER_USER_ID = os.environ.get("OWNER_USER_ID", "").strip()
+# Support multiple owner user_ids (e.g. phone + laptop accounts) via
+# comma-separated env. The first entry stays canonical for legacy scalar
+# comparisons; `is_owner(uid)` and the injected `user["is_owner"]` flag
+# are the correct check going forward.
+OWNER_USER_IDS = frozenset(u.strip() for u in OWNER_USER_ID.split(",") if u.strip())
+if OWNER_USER_IDS:
+    OWNER_USER_ID = next(iter(OWNER_USER_IDS))  # keep the primary as a scalar
+
+
+def is_owner(uid: str) -> bool:
+    return bool(uid) and uid in OWNER_USER_IDS
 WORKSPACE_ROOT = Path(os.environ["WORKSPACE_ROOT"])
 OVERRIDE_PASSWORD = os.environ["OVERRIDE_PASSWORD"]
 WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
+
+# Optional: a read-only handle to the production Mongo. When set, the training
+# exporter reads chronicle/dpo rows from *here* instead of the local preview DB
+# so datasets always contain real user signal. Falls back to `db` when unset,
+# which keeps local/dev usage frictionless.
+_PROD_MONGO_URL = os.environ.get("PROD_MONGO_URL", "").strip()
+_PROD_DB_NAME = os.environ.get("PROD_DB_NAME", "").strip() or DB_NAME
+if _PROD_MONGO_URL:
+    _prod_client = AsyncIOMotorClient(_PROD_MONGO_URL)
+    prod_db = _prod_client[_PROD_DB_NAME]
+else:
+    prod_db = db
 
 log = logging.getLogger("gauntlet")
 
@@ -63,6 +86,9 @@ async def get_current_user(
     user = await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # Inject owner flag once so every downstream route can just check
+    # `user.get("is_owner")` instead of re-parsing OWNER_USER_ID env.
+    user["is_owner"] = is_owner(user.get("user_id", ""))
     return user
 
 
