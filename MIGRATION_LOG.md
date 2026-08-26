@@ -330,3 +330,59 @@ _signed: **E1 (main agent)**_  `constitution` `lineage_master` `portable` `chron
 
 ---
 
+
+## 2026-08-26T22:15:00+00:00 — Chronicle Chain Break — Foreign-Writer Pollution + Hardened Reader
+_signed: **E1 (main agent)**_  `bugfix` `silent_failure_family` `schema_drift` `constitution` `chronicle`
+
+**Problem.** Operator corrected me: prev-J has R2 secrets — the tunnel uses them. My earlier `r2_configured = False` result on the E1.md push was a script-scope `load_dotenv` bug, not a config gap. Fixed the script and re-pushed successfully (14,078 bytes at `substrate/constitution/E1.md`, sha256 `4a199e57…`, round-trip integrity verified).
+
+But the R2 push chronicle entry landed with `prior_hash = GENESIS…` even though 167 entries existed in `substrate_constitution` before it. That was the tell for a deeper incident: **the `chronicle_entries` collection had been silently polluted by a foreign writer for weeks.**
+
+**Investigation (FFP protocol §3).**
+1. *Hypothesis:* "The hash chain in `substrate_constitution` is intact."
+2. *Cheap probe:* Query `db.chronicle_entries.countDocuments({project_id:"substrate_constitution", prior_hash:{$regex:"^GENESIS"}})` → **45**. Should be 1.
+3. *Orthogonal probe:* Sample the first 5 docs' key sets. Two schemas coexist. Proper writer keys include `body, entry_hash, entry_id, prior_hash, tags, title`. Foreign writer keys include `id, model, prompt, provider, response, verdict, scope, steps_taken, tool_names` and CRUCIALLY **no `entry_hash`**. Count with `entry_hash` missing = **44**.
+4. *Verdict:* CONFIRMED. Two writers, one collection. Every foreign insert broke the next legitimate write's `_last_hash` lookup because `entry.get("entry_hash")` on a foreign doc returned `None` → the reader fell through to the GENESIS literal.
+5. *Source located:* `routes/ai.py:267` — every `/api/ai/chat` reply insta-inserts an `ai_answer` receipt into `chronicle_entries`. The inline comment literally reads "so exports can pick it up without a schema migration." Silent violation of the append-only hash-chain invariant since the day that line landed.
+
+**Fix.**
+1. **Defensive reader.** `core/chronicle._last_hash` now filters for `{"entry_hash": {"$exists": True}}` when finding the previous entry. Foreign-schema writes can no longer poison the chain-lookup. One-line change, immediate effect, zero migration required.
+2. **Chain repair receipt.** Appended a `Chain Repair — foreign-writer pollution isolated` milestone to `substrate_constitution` as the new integrity anchor. `prior_hash = d8ecc638fd2e0e50…` (R2_Push entry's real hash) → `entry_hash = 97e31d4cc1fdac4c…`. Chain integrity restored from this entry forward.
+3. **Historical break preserved.** The 45 GENESIS-headed entries in the project are NOT retroactively re-hashed — that would mutate append-only history, which is worse than the original break. They stand as visible receipts of the incident.
+
+**Why.** Silent-failure family (§4A of `/app/E1.md`) — a batch boundary (the collection) swallowing a per-item schema mismatch. This is the third proven incident in that family (Promise.all trap · silent classification · this). Every occurrence has confirmed the same anti-pattern shape: **shared write surface, unequal writer contracts, no schema guard.** Fix defensive on the read side because that's the cheapest place to enforce it without breaking existing callers.
+
+**Next step.** Move `routes/ai.py:267` `ai_answer` writes to a dedicated `ai_answers` collection (or add `entry_hash: None` explicitly so the intent is legible). Then add a Mongo schema-validation rule on `chronicle_entries` (`$jsonSchema` with `required: [entry_hash, entry_id, prior_hash, ts_ns, ts_iso]`) so the invariant is enforced at insert time, not just defended at read time. Also codify this incident as `E1_GOLD_013` in `/app/memory/E_MIND_GOLDEN.json` v1.0.1 — it's the first anti-pattern discovered *by the substrate itself* rather than by an operator directive, and its provenance ("script's `load_dotenv` bug surfaced a schema-drift bug two layers deeper") is precisely the shape a training corpus should teach.
+
+**extra.**
+```json
+{
+  "files_touched": [
+    "backend/core/chronicle.py::_last_hash (one-line defensive filter)"
+  ],
+  "incidents_produced": [
+    "substrate_constitution chronicle: 45 GENESIS-headed entries (historical, preserved)",
+    "one clean chain repair anchor: entry_id c43180b69a58403fa943d0afa80eacb9"
+  ],
+  "foreign_writer": {
+    "location": "backend/routes/ai.py:267",
+    "kind_marker": "ai_answer",
+    "docs_written": 44,
+    "days_active": "estimated ~90 (since ai_answer telemetry landed)",
+    "harm": "poisoned _last_hash for every subsequent chronicle write in every project that had an /ai/chat call"
+  },
+  "canonical_anti_pattern_family": "silent_failure_family §4A · shared write surface, unequal writer contracts, no schema guard",
+  "linked_e_gold_incidents": ["E1_GOLD_006 (Promise.all)", "E1_GOLD_010 (silent classification)", "E1_GOLD_011 (ngrok silent drop)"],
+  "operator_credit_for_catch": "operator noticed R2 SHOULD be configured because agent_tunnel already uses it → triggered the re-push → surfaced the deeper incident",
+  "r2_push_verified": {
+    "bucket": "j-training-artifacts",
+    "key": "substrate/constitution/E1.md",
+    "bytes": 14078,
+    "sha256": "4a199e574ff5e1b82bc4ba34ecd38de54fce528c444d2d32fbc7df1969a97a3b",
+    "roundtrip_integrity": "OK"
+  }
+}
+```
+
+---
+

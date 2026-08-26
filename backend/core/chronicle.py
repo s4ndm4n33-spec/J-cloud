@@ -81,8 +81,15 @@ async def ensure_indexes(db) -> None:
 
 
 async def _last_hash(db, project_id: str) -> str:
+    # Defensive filter: the `chronicle_entries` collection is polluted by
+    # foreign writers (routes/ai.py logs `ai_answer` receipts here without
+    # entry_hash — see MIGRATION_LOG 2026-08-26 chain-break incident). If
+    # we don't guard, `_last_hash` finds one of those docs first, `entry_hash`
+    # is undefined, and we silently fall through to GENESIS — breaking the
+    # cryptographic chain for every subsequent legitimate write. Filter to
+    # docs that actually carry the chain field.
     last = await db.chronicle_entries.find_one(
-        {"project_id": project_id},
+        {"project_id": project_id, "entry_hash": {"$exists": True}},
         sort=[("ts_ns", -1)],
         projection={"_id": 0, "entry_hash": 1},
     )
