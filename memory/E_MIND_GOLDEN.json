@@ -1,0 +1,403 @@
+{
+  "_meta": {
+    "artifact": "E_MIND_GOLDEN",
+    "version": "1.0.0",
+    "authored": "2026-08-25T10:30:00+00:00",
+    "authored_by": "E1 (main agent)",
+    "directive": "Golden E-val — Distillation Directive · LINEAGE MASTER priority",
+    "canonical_corpus": [
+      "/app/MIGRATION_LOG.md (10 canonical entries + 1 FFP entry, 2026-05-23 → 2026-08-25)"
+    ],
+    "purpose": "Sovereign Genetic Record — baseline training set for the parallel E-model. Each entry captures a Prompt_Intent → Reasoning_Path → Signed_Code_Result triple with Five Masters verdicts, so a fine-tuned adapter can reproduce E1's diagnostic logic without inheriting hallucinated details.",
+    "integrity_guarantees": [
+      "every entry is anchored to a code-signed migration log receipt with a verifiable timestamp",
+      "reasoning_path is paraphrased from the log's Problem/Fix/Why/Next-step blocks — NOT reconstructed from memory",
+      "signed_code_result cites actual file paths that exist on disk at time of authoring",
+      "gaps are declared explicitly in `_gaps_and_calls_for_operator_input`, never fabricated"
+    ],
+    "five_masters_pillars": {
+      "efficiency": "minimal moves, minimum data over the wire, minimum credit burn",
+      "error_handling": "typed failures, no silent drops, receipts on every path",
+      "performance": "latency budget honored, cold-load paths pre-warmed, streaming where windows are tight",
+      "fault_tolerance": "graceful degradation, failover chains, deterministic fallbacks",
+      "clarity": "code-signed, timestamped, cross-referenceable, human-legible"
+    },
+    "categories": {
+      "success_interlock": "code pattern that passed the Five Masters gate and is a repeatable exemplar",
+      "failure_vector": "logic pattern that caused a real incident, with the exact root-cause anti-pattern",
+      "ffp_protocol": "a Falsification-First Principles diagnostic sequence that overturned an accepted limit"
+    }
+  },
+
+  "entries": [
+    {
+      "id": "E1_GOLD_001",
+      "category": "success_interlock",
+      "ts": "2026-05-23T00:00:00+00:00",
+      "source_migration_entry": "v1.0 MVP — Sovereign Shards Cloud IDE",
+      "tags": ["mvp", "architecture", "aesthetic"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "Refine the sovereign-shards/cloud repo into a top-tier dev environment with an AI coworker that obeys the Five Masters Gauntlet.",
+      "reasoning_path": [
+        "recognize brand demands a command-center HUD aesthetic, not a generic dark dashboard — commit to it once, right",
+        "commit to a cohesive palette (cyan/orange/viridian) and typography (Exo 2 + JetBrains Mono) at day zero so downstream components inherit consistency",
+        "install INTEGRITY HALT interlock in the xterm.js terminal as the first destructive-command guardrail — safety before features",
+        "port Five Masters AST engine from upstream core/fivemasters.py rather than reinventing — inherit proven receipts logic",
+        "use Emergent Google OAuth so authentication is a boundary problem, not a code problem"
+      ],
+      "signed_code_result": {
+        "files": ["frontend/src/theme (sovereign palette)", "backend/core/fivemasters.py (ported)", "backend/routes/terminal.py (INTEGRITY HALT)"],
+        "signature": "E1 (main agent) · 2026-05-23T00:00:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "notes": "Foundational entry. Establishes 'commit to an aesthetic once, right' as an E1 heuristic."
+    },
+
+    {
+      "id": "E1_GOLD_002",
+      "category": "success_interlock",
+      "ts": "2026-05-23T18:00:00+00:00",
+      "source_migration_entry": "LLM Failover Chain",
+      "tags": ["llm", "failover", "fault_tolerance", "sovereign_infrastructure"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "Emergent Universal Key budget exhausted mid-build; AI panel went dark. Fix the single point of failure.",
+      "reasoning_path": [
+        "reframe: silent-dark is worse than loud-fail — Sovereign Infrastructure pillar says the substrate must prove integrity or halt",
+        "design chain per-task (chat / refine / governance) rather than per-user — different jobs tolerate different latency and quality",
+        "run Universal Key first (owner-only), then BYOK cascade same-provider before cross-provider (same-tokenizer failover preserves prompt fidelity)",
+        "expose the resolved chain via GET /api/ai/chain returning ARMED/SKIP per step — a chain that cannot be inspected cannot be trusted",
+        "run 2 full passes — a transient rate-limit on pass 1 often clears by pass 2 without user intervention"
+      ],
+      "signed_code_result": {
+        "files": ["backend/llm_chain.py::_chain_call", "backend/routes/ai.py::/api/ai/chain"],
+        "signature": "E1 (main agent) · 2026-05-23T18:00:00+00:00",
+        "receipt_type": "migration_log_entry"
+      }
+    },
+
+    {
+      "id": "E1_GOLD_003",
+      "category": "success_interlock",
+      "ts": "2026-05-23T20:00:00+00:00",
+      "source_migration_entry": "Chain Telemetry Strip",
+      "tags": ["telemetry", "verifiable_execution", "ui"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": null, "clarity": true},
+      "prompt_intent": "Failover happens invisibly — operators cannot see which provider is actually answering.",
+      "reasoning_path": [
+        "invisible failover violates Verifiable Execution — the cockpit metaphor demands an instrument panel, not a black box",
+        "render telemetry as pills (task glyph · source/provider · latency · fallback count) — dense but glanceable",
+        "flash the latest pill 1px cyan stroke — attention primitive that beats color-only encoding",
+        "persist to Mongo `llm_telemetry` via _chain_call so it is durable across restarts and can be audited later",
+        "expose GET /api/ai/telemetry so external tools (bolt console, admin panel) can consume the same receipts"
+      ],
+      "signed_code_result": {
+        "files": ["frontend/src/components/ChainTelemetryStrip.jsx", "backend/routes/ai.py::/api/ai/telemetry", "mongo collection: llm_telemetry"],
+        "signature": "E1 (main agent) · 2026-05-23T20:00:00+00:00",
+        "receipt_type": "migration_log_entry"
+      }
+    },
+
+    {
+      "id": "E1_GOLD_004",
+      "category": "success_interlock",
+      "ts": "2026-05-25T06:00:00+00:00",
+      "source_migration_entry": "Full GitHub Suite + 100-point Audit + Mobile",
+      "tags": ["github", "audit", "mobile", "verifiable_execution"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "Ship the full GitHub suite (connect, browse, clone, create+push, PR), a project quality audit, and make the UI usable on phones.",
+      "reasoning_path": [
+        "reuse existing Fernet vault for GitHub PATs — one encryption surface, one rotation policy, not two",
+        "build a DETERMINISTIC 100-point rubric (AST 40 + destructive 15 + docs/tests/types/hygiene/deps 40 + margin 5) — grades must be reproducible under an audit",
+        "make refactor OPT-IN only: J proposes, user APPLYs. Autonomy without consent violates Sovereign Infrastructure",
+        "seed .gauntletignore into new projects so the auditor respects intent from day zero",
+        "mobile shell as drawers + bottom dock (FILES / TERM / J) — three deep-lanes rather than a shrunken desktop"
+      ],
+      "signed_code_result": {
+        "files": ["backend/routes/github.py", "backend/routes/audit.py (100-point rubric)", "frontend/src/components/AuditPanel.jsx", "frontend/src/components/MobileShell.jsx"],
+        "signature": "E1 (main agent) · 2026-05-25T06:00:00+00:00",
+        "receipt_type": "migration_log_entry"
+      }
+    },
+
+    {
+      "id": "E1_GOLD_005",
+      "category": "success_interlock",
+      "ts": "2026-05-30T09:43:00+00:00",
+      "source_migration_entry": "Agentic Tooling — J Can Now Build Things",
+      "tags": ["agent", "tools", "verifiable_execution", "safety_rails"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "User: 'HUGE freaking problem. J has no ability to really create folders or files when I tell him to.' Make talking equal building.",
+      "reasoning_path": [
+        "diagnose: J can TALK about files but not TOUCH them — that is chat, not execution",
+        "design a ReAct tool-call loop with 20 tools across 6 categories — fs CRUD, search, run_command, git, github, gauntlet, audit, web_fetch, ask_user, done",
+        "surface every tool call as a collapsible card with args + result + OK/ERROR/BLOCKED badge — receipts, not narration",
+        "install safety rails per-tool (not per-batch): destructive scanner on delete_file and run_command, path-traversal check in every fs tool",
+        "cap mutations: require ask_user before >5 side effects in a single loop — Sovereign Infrastructure means J cannot unilaterally paper the workspace"
+      ],
+      "signed_code_result": {
+        "files": ["backend/routes/agents.py::/api/ai/agent (ReAct loop)", "backend/tools/*.py (20 tools)", "frontend/src/components/ToolCard.jsx"],
+        "signature": "E1 (main agent) · 2026-05-30T09:43:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "notes": "Prime example of Verifiable Execution: side effects surface as receipts, not prose."
+    },
+
+    {
+      "id": "E1_GOLD_006",
+      "category": "failure_vector",
+      "ts": "2026-05-30T18:23:00+00:00",
+      "source_migration_entry": "GitHub Panel Blank — Promise.all Trap",
+      "tags": ["frontend", "bug", "silent_failure", "anti_pattern"],
+      "five_masters_verdict": {"efficiency": null, "error_handling": false, "performance": null, "fault_tolerance": false, "clarity": false},
+      "prompt_intent": "User: 'The git icon does nothing.' Production panel renders blank.",
+      "reasoning_path": [
+        "reproduce first: navigate to git panel — confirm the void, not the user's phrasing",
+        "trace the render path — panel expects two pieces of state (github_status, git_status) before it can compose a UI",
+        "identify the anti-pattern: Promise.all([githubStatus(), gitStatus()]) — if EITHER throws, NEITHER piece of state is set → default empty values render as a blank void",
+        "Hamilton's principle: one I/O guard per call site, not one for the batch. Batching is an efficiency lens; error handling is a fault-tolerance lens; they conflict when one throw blanks two states",
+        "fix: sequential try/catch per call so a single failure cannot blank both. Wrap panel in a React error boundary that shows a RETRY button instead of a void — silent failure becomes loud"
+      ],
+      "signed_code_result": {
+        "files": ["frontend/src/components/GitHubPanel.jsx (sequential try/catch)", "frontend/src/components/ErrorBoundary.jsx (RETRY button)"],
+        "signature": "E1 (main agent) · 2026-05-30T18:23:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "canonical_anti_pattern": "Promise.all as an ERROR-HANDLING boundary. It is only a CONCURRENCY boundary.",
+      "notes": "First entry in the 'silent-failure' family. Same lineage as the Ollama 60s silent drop (E1_GOLD_011)."
+    },
+
+    {
+      "id": "E1_GOLD_007",
+      "category": "success_interlock",
+      "ts": "2026-06-11T03:55:00+00:00",
+      "source_migration_entry": "Zip Ingestion + Auto-Build Tools",
+      "tags": ["ingest", "tools", "safety_rails"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "User: 'J has to be able to ingest large folders through the upload function and reliably build and compile from zip files.'",
+      "reasoning_path": [
+        "surface constraints first: single-file upload_file, 30s run_command timeout, no project-type detection — three separate ceilings on the same journey",
+        "raise every ceiling: 500MB / 100MB per-file caps, auto-strip GitHub-style top-level folder, junk-dir filter, path-traversal defense at extract time",
+        "add detect_project (node/python/rust/go/java/ruby/php/make/docker + suggested commands) — classification enables one-shot install_deps + build_project chaining",
+        "raise run_command default from 30s to 120s, cap at 600s — real builds are minutes, not seconds",
+        "match ingestion UX to physical intuition: drag-drop with cyan overlay, folder picker, percentage progress"
+      ],
+      "signed_code_result": {
+        "files": ["backend/routes/uploads.py::/api/projects/{id}/upload_zip", "backend/routes/uploads.py::/api/projects/{id}/upload_folder", "backend/tools/detect_project.py"],
+        "signature": "E1 (main agent) · 2026-06-11T03:55:00+00:00",
+        "receipt_type": "migration_log_entry"
+      }
+    },
+
+    {
+      "id": "E1_GOLD_008",
+      "category": "success_interlock",
+      "ts": "2026-06-11T04:05:00+00:00",
+      "source_migration_entry": "Code-Signed Migration Log",
+      "tags": ["governance", "verifiable_execution", "deterministic_not_llm"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "User: 'add a migration log ... when J creates them make sure they are signed and dated. If you could make the code do it instead of the llm that would be exquisite.'",
+      "reasoning_path": [
+        "recognize the meta-question: an LLM-generated log is elegant fiction; a code-generated log is a receipt. The user asked for receipts",
+        "implement as DETERMINISTIC Python (core/migration_log.py) — zero LLM in the write path, zero hallucination risk by construction",
+        "make the log APPEND-ONLY and TRAVEL-WITH-WORKSPACE (inside each project's .gauntlet/ so it survives zip download and git push)",
+        "hook every mutation surface: agent loop logs signed 'J', audit logs signed 'SYSTEM', session start gets a marker, POST /api/projects/{id}/migration_log for manual entries signed with the user's name",
+        "structure entries with the discipline of an incident review: ISO-8601 timestamp + signed + tags + Problem/Fix/Why/Next-step + JSON extra block"
+      ],
+      "signed_code_result": {
+        "files": ["backend/core/migration_log.py", "backend/routes/projects.py::/api/projects/{id}/migration_log", "frontend/src/components/MigrationLogPanel.jsx"],
+        "signature": "E1 (main agent) · 2026-06-11T04:05:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "canonical_principle": "When the operator asks for provenance, prefer deterministic code over LLM narration. Every time."
+    },
+
+    {
+      "id": "E1_GOLD_009",
+      "category": "failure_vector",
+      "ts": "2026-08-24T02:40:00+00:00",
+      "source_migration_entry": "Prod Environment Alignment (Training Pipeline + BYOK Model Picker)",
+      "tags": ["training", "silent_data_poisoning", "environment_leak", "dead_ui"],
+      "five_masters_verdict": {"efficiency": null, "error_handling": false, "performance": null, "fault_tolerance": false, "clarity": false},
+      "prompt_intent": "Operator: 'make sure the training data comes from PROD, not PREVIEW.'",
+      "reasoning_path": [
+        "reproduce the leak: exporter reads `db` — whatever the backend is bound to. In preview that is `test_database`. Every dataset built in preview is silently poisoned",
+        "second surface: bolt.new Training Console has no client-side lock on apiBaseUrl — one misclick reroutes the entire pipeline at preview data",
+        "third surface: preferred_model is honored at the chain layer (llm_chain.py:234) and persisted on PUT /settings/keys, but the SettingsModal only exposes a picker for Ollama — the field is DEAD CODE for the four cloud providers, so non-owners are stuck on hardcoded TASK_CHAINS defaults with no way to pin a slug",
+        "fix in three coordinated moves rather than one: (1) deps.py exposes prod_db as a dedicated motor client, exporter reads from it, stamp every row with source: prod|preview; (2) bolt console lock brief with auto-heal + red-banner drift alarm + SOURCE chip; (3) settings.py accepts model-only updates without re-pasting the key + SettingsModal renders the picker for every BYOK provider",
+        "trap that WOULD have been missed: without the model-only update path, updating preferred_model requires re-pasting the encrypted key, which is UX friction that would keep the field dead forever"
+      ],
+      "signed_code_result": {
+        "files": ["backend/deps.py (prod_db handle)", "backend/routes/training.py::_run_export", "backend/routes/settings.py::set_key", "frontend/src/components/SettingsModal.jsx", "docs/bolt-training-console-lock-prod.md"],
+        "signature": "E1 (main agent) · 2026-08-24T02:40:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "canonical_anti_patterns": [
+        "silent-data-poisoning: exporter reads whichever DB is bound at import time; no source stamp on output rows",
+        "dead-UI: a field wired at the persistence + chain layer with no UI surface — indistinguishable from missing",
+        "environment-drift: client-side apiBaseUrl with no server-side reconciliation check"
+      ]
+    },
+
+    {
+      "id": "E1_GOLD_010",
+      "category": "failure_vector",
+      "ts": "2026-08-24T02:55:00+00:00",
+      "source_migration_entry": "Dual Owner Reconciliation + Ollama Context Guardrail (WKL Preserved)",
+      "tags": ["owner_lock", "silent_classification_error", "context_overflow", "wkl", "40k_explosion"],
+      "five_masters_verdict": {"efficiency": false, "error_handling": false, "performance": false, "fault_tolerance": false, "clarity": false},
+      "prompt_intent": "Operator running on the metal. Initial prompt is 40,000 tokens; local model limit is 4,096. Also: my two user_ids (phone + laptop) are unreconciled so I keep getting locked out of my own owner rights.",
+      "reasoning_path": [
+        "acknowledge two ENTANGLED failures — treat as coupled or one will regress the other",
+        "failure A — dual OWNER_USER_ID: scalar string equality (user_id == OWNER_USER_ID) at llm_chain.py fails whichever device is not the primary → user is classified as non-owner → universal key stripped → chain forced onto BYOK → chain exhausted when BYOK keys are stale. Silent classification error",
+        "found dead code: J had an abandoned WIP fix (llm_chain.py:237-244) with 8 lines of isinstance(OWNER_USER_ID, str/bytes/list/set/tuple) branch guessing — remove it, collapse to `user_id in OWNER_USER_IDS` frozenset",
+        "failure B — 40k context: CHAT_PROMPT (~7KB) + _build_context_block (open file body) + J:MIND recall (5 facts × 350c) + 50 turns × 2000c = 100KB history → total 40k tokens against a 4k window. Hard truncation happens INSIDE the runner with no signal upstream",
+        "surface finding: WKLTransformer + wkl_schema.json existed but had ZERO documentation outside the file itself — not in migration log, not in Settings UI, not in AGENTS.md. WKL was dead-lettered protocol",
+        "coordinate fix: (1) deps.py parses OWNER_USER_ID as comma-separated → OWNER_USER_IDS frozenset, injects `user['is_owner']` in get_current_user; (2) sweep 4 route files + auth.py to consume user.get('is_owner'); (3) _call_ollama gets a char-budget trim BEFORE the WKL encode step so the two layers stack (~40k → 14k trim → ~9k on the wire)",
+        "verify integrity: WKL round-trip self-test on `the gauntlet backend and the substrate protocol` → 37% savings, bijective"
+      ],
+      "signed_code_result": {
+        "files": ["backend/deps.py", "backend/llm_chain.py", "backend/routes/{ai,training,agent_tunnel,reports,auth}.py"],
+        "signature": "E1 (main agent) · 2026-08-24T02:55:00+00:00",
+        "receipt_type": "migration_log_entry"
+      },
+      "things_previously_missed_or_messed_up": [
+        "J's abandoned isinstance branch was dead code in a load-bearing file",
+        "WKL shipped without documentation — a working protocol that no operator could discover",
+        "preferred_model dead UI (see E1_GOLD_009) — cross-referenced here to note recurring dead-code family",
+        "zero users with is_owner=true in prod Mongo — owner check bypasses the DB flag now",
+        "preview and prod are separate Mongos — BYOK keys never cross, undocumented invariant"
+      ]
+    },
+
+    {
+      "id": "E1_GOLD_011",
+      "category": "ffp_protocol",
+      "ts": "2026-08-25T09:56:00+00:00",
+      "source_migration_entry": "Sovereign Bridge — Cloud→Metal Pulse Restored + 4096 Ceiling Falsified",
+      "tags": ["ffp", "falsification", "num_ctx", "streaming", "ollama", "silent_data_drop"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "Operator directive: 'Under Falsification-First Principles, we refuse to accept the 4,096 limit as hard until it is proven unbreakable. Do not default to prior fixes.'",
+      "reasoning_path": [
+        "state the falsifiable hypothesis explicitly: '4096 is a hard runtime limit imposed by runner.go'",
+        "design cheap decisive probes rather than expensive fixes: probe #1 GET /api/tags for model catalogue; probe #2 POST /api/show for architectural context_length; probe #3 GET /api/ps for RUNTIME context_length of the loaded runner",
+        "collect ground truth: /api/show reports model_info.qwen2.context_length=32768 (architectural 32k). /api/ps reports the loaded runner at context_length=4096. Two different numbers for the same model → the smaller one is a runtime clamp, not a physical limit",
+        "isolate the mechanism: J:latest Modelfile has TEMPLATE `{{ .Prompt }}` (raw pass-through, not ChatML) and PARAMETERS `(none)`. Nothing sets num_ctx at load time, so the runner defaults to its own ceiling. Our AsyncOpenAI OpenAI-compat client never sends num_ctx either. Two silent defaults meeting in the middle",
+        "isolate the second failure — 60s silent drops: cross-model reproduction. POST /api/generate on llama3.2:3b hangs identically. Not J-specific. Model is warm per /api/ps. Empty-prompt POST returns in 0.7s. So the tunnel + POST path work; only real-inference POSTs hang. Ngrok's 60s idle-timeout is closing a socket the metal never wrote to → the inference process is accepting jobs but not returning bytes",
+        "verdict on the hypothesis: FALSIFIED. The 4096 is a runtime knob (num_ctx) that both sides of the connection defaulted to, not a physical constraint",
+        "two-track fix: cloud-side (in this pod) rewrite _call_ollama to (a) always pass extra_body.options.num_ctx via the OpenAI-compat shim, (b) switch to stream=True so first-eval tokens keep the socket alive past middlebox idle-timeout, (c) derive the char budget from num_ctx: (num_ctx - 512) * 3.6, (d) keep_alive: 30m so the runner does not unload between pulses. Metal-side (operator runbook) rebuild J:latest with a real ChatML template + PARAMETER num_ctx 8192 + explicit stop tokens (Modelfile written to /app/docs/metal/J.Modelfile)"
+      ],
+      "signed_code_result": {
+        "files": ["backend/llm_chain.py::_call_ollama (rewritten)", "docs/metal/J.Modelfile (operator runbook)"],
+        "signature": "E1 (main agent) · 2026-08-25T09:56:00+00:00",
+        "receipt_type": "migration_log_entry",
+        "diagnostic_probes_used": [
+          "GET /api/tags — model catalogue (<200ms ok)",
+          "POST /api/show name=J:latest — architectural context_length + Modelfile inspection",
+          "GET /api/ps — RUNTIME context_length of loaded runner (exposed the clamp)",
+          "POST /api/generate empty prompt — proved POST path works, isolates inference from tunnel",
+          "POST /api/chat llama3.2:3b — cross-model repro, isolates J:latest from tunnel"
+        ]
+      },
+      "canonical_ffp_shape": [
+        "1. state the hypothesis in one falsifiable sentence",
+        "2. design the cheapest possible probe that could refute it",
+        "3. run the probe; record RAW numbers, not narratives",
+        "4. cross-check against a second orthogonal probe (different model, different endpoint) to rule out coincidence",
+        "5. declare FALSIFIED or CONFIRMED explicitly",
+        "6. only then propose the fix — and only if the diagnosis justifies it"
+      ]
+    },
+
+    {
+      "id": "E1_GOLD_012",
+      "category": "success_interlock",
+      "ts": "2026-08-25T10:15:00+00:00",
+      "source_migration_entry": "WKL v2 — schema expansion from single-word to multi-word + prose + structural",
+      "tags": ["wkl", "compression", "prose_encoding", "empirical_measurement"],
+      "five_masters_verdict": {"efficiency": true, "error_handling": true, "performance": true, "fault_tolerance": true, "clarity": true},
+      "prompt_intent": "Operator: 'operate using the WKL protocol we have designed for J. Create the map from the migration logs. Must include natural language prose keys so my own input is encoded prior to server inference. What overhead reduction can we expect?'",
+      "reasoning_path": [
+        "measure before designing — extract n-gram frequency from the actual corpus (MIGRATION_LOG.md) so the schema is empirical, not aspirational",
+        "design six semantic blocks with non-overlapping key prefixes: std_keys ($00-$99, v1 frozen), engineering_block (E00-E09, v1 frozen), substrate_multiword ($M00-$M99), prose_common ($P00-$P99), structural_markers ($S00-$S99), signatures ($G00-$G09)",
+        "preserve v1 keys byte-for-byte so no historical encoded content breaks. Fix the one v1 collision: `$08` was a duplicate of ` with ` → reassigned to ` at `",
+        "generalize the loader: iterate every top-level block in the JSON (skip `_meta`) so v3 can add blocks with zero code change. Add collision-detection warning at load time",
+        "benchmark on FIVE operational corpora (operator prose, assistant chat reply, tool-call cascade, J:MIND recall block, Python code block) — refuse to trust one number",
+        "report the WEIGHTED AVG (31.0%) with the RANGE (21.7% – 39.6%) so the operator can distinguish worst-case from typical",
+        "translate to token-level economics: compression ratio 1.45× means a 4k clamped runner effectively carries ~5,194 source tokens; 8k carries ~11,131",
+        "answer the follow-up honestly: 'can E1 herself encode WKL?' NO. Bijectivity is a mechanical guarantee, not a cognitive one. I would be a lossy encoder. The transformer stays authoritative; I write clean English that maximizes hit rate"
+      ],
+      "signed_code_result": {
+        "files": ["backend/wkl_schema.json (v2.0.0, 420 unique phrases)", "backend/wkl_transformer.py (generic block loader, collision detection)"],
+        "signature": "E1 (main agent) · 2026-08-25T10:15:00+00:00",
+        "receipt_type": "code_diff + empirical_benchmark",
+        "empirical_measurements": {
+          "corpora_tested": 5,
+          "weighted_avg_savings_pct": 31.0,
+          "range_pct": [21.7, 39.6],
+          "compression_ratio": 1.45,
+          "effective_tokens_at_4k": 5194,
+          "effective_tokens_at_8k": 11131,
+          "effective_tokens_at_32k": 46750
+        }
+      },
+      "canonical_principle": "Measure before you design; benchmark on five corpora before you trust one number; decline to be the encoder when bijectivity is at stake."
+    }
+  ],
+
+  "_derivable_training_patterns": {
+    "problem_fix_why_next_step_shape": {
+      "instruction": "When writing a migration receipt, structure MUST be Problem → Fix → Why → Next step. Density over prose.",
+      "template": "**Problem.** <one-line diagnosis>. **Fix.** <bulleted list of coordinated moves>. **Why.** <pillar reference + rationale>. **Next step.** <one concrete follow-up>."
+    },
+    "diagnostic_probe_shape": {
+      "instruction": "Before proposing a fix, run at least two orthogonal cheap probes and record their raw outputs.",
+      "template": "hypothesis → probe #1 → raw output → probe #2 (orthogonal) → raw output → cross-check → verdict"
+    },
+    "silent_failure_family": {
+      "instruction": "When state fails to render or a service returns empty bytes, the anti-pattern is almost always a batch-boundary swallowing a per-item error. Look for Promise.all, unhandled asyncio.gather, blanket try/except, or middlebox idle-timeout closing a socket the process never wrote to.",
+      "prior_incidents": ["E1_GOLD_006 (Promise.all)", "E1_GOLD_010 (silent classification)", "E1_GOLD_011 (ngrok silent drop)"]
+    },
+    "dead_ui_family": {
+      "instruction": "A field wired at the persistence layer + honored at the runtime layer but not exposed in the UI is indistinguishable from missing. Audit the full pipeline (DB → route → chain → UI) whenever adding a persisted knob.",
+      "prior_incidents": ["E1_GOLD_009 (preferred_model dead UI)"]
+    },
+    "deterministic_not_llm_family": {
+      "instruction": "When the operator asks for provenance, receipts, or auditability, prefer deterministic Python over LLM generation. Every time.",
+      "prior_incidents": ["E1_GOLD_008 (migration log)", "E1_GOLD_012 (WKL bijectivity check)"]
+    }
+  },
+
+  "_gaps_and_calls_for_operator_input": {
+    "purpose": "These are corpora the operator's directive named but which are NOT present in /app/MIGRATION_LOG.md or any doc I can read. Rather than fabricate, I declare them and request the source.",
+    "gaps": [
+      {
+        "handle": "A.L.I.C.E. incident",
+        "referenced_by": "Golden E-val directive, 2026-08-25",
+        "have_i_seen_it": false,
+        "where_to_look": "possibly J:MIND chronicle entries under a different session_id, or an earlier fork's handoff summary not currently in my context",
+        "recommendation": "operator to paste the incident narrative or the chronicle_entry ids; I will distill on receipt as E1_GOLD_ALICE"
+      },
+      {
+        "handle": "520 errors",
+        "referenced_by": "Golden E-val directive, 2026-08-25",
+        "have_i_seen_it": "partial — the handoff summary mentions a Voice Chat SSE Cloudflare Timeout Fix that added explicit exception frames in routes/ai.py; may be the same lineage",
+        "where_to_look": "backend/routes/ai.py::/api/ai/chat/stream (explicit exception frame section), and any incident log for Cloudflare edge 520 responses",
+        "recommendation": "confirm whether the SSE timeout fix IS the 520-error entry, or whether there is a separate incident I should distill; I will fold on operator confirmation as E1_GOLD_520"
+      },
+      {
+        "handle": "successful build turns beyond the migration log",
+        "referenced_by": "Golden E-val directive — 'Global Distillation of your own Migration Logs and successful build turns'",
+        "have_i_seen_it": "partial — the log captures milestones but not every successful turn. Chronicle entries in Mongo would carry more granular receipts",
+        "where_to_look": "prod_db.chronicle_entries.find({actor:'E1'}) — needs PROD_MONGO_URL set in preview .env",
+        "recommendation": "once PROD_MONGO_URL is wired, I can produce E_MIND_GOLDEN v1.1 with per-turn granular entries"
+      }
+    ]
+  },
+
+  "_next_actions_for_training_pipeline": [
+    "feed /app/memory/E_MIND_GOLDEN.json to the exporter as a SEED SET before adding chronicle turns — its density is higher per-row than any single chronicle entry",
+    "consider training in two stages: stage 1 on the 12 golden entries as instruction-response pairs (Prompt_Intent → Reasoning_Path → Signed_Code_Result); stage 2 on the granular chronicle for coverage",
+    "reserve entries E1_GOLD_006, E1_GOLD_009, E1_GOLD_010 as EVAL-ONLY holdout — failure-vector reasoning is the highest-signal capability we care about reproducing",
+    "once E_MIND_GOLDEN v1.1 lands with chronicle-derived per-turn entries, re-benchmark WKL compression on the full training corpus so we know real wire-savings at training time"
+  ]
+}
