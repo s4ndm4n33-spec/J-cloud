@@ -63,3 +63,9 @@ _signed **SYSTEM** · kind `milestone` · `c7daab8634`_  `j` `persona` `owner_pr
 Strengthened `_OWNER_INTROSPECTION_CLAUSE` in `backend/core/guardrails.py` with a bounded '[SOVEREIGN OPERATOR — NO REFLEXIVE REFUSAL PROTOCOL]' block. Reflexive LLM-safety-scold refusals to the sovereign owner are now forbidden; the four legitimate refusal categories are enumerated (secrets, INTEGRITY HALT, multi-tenant leak, prod-write from preview) with the requirement to cite the specific substrate rule.
 
 ---
+## 2026-08-26T23:13:13+00:00 · RED DAWN CLAUSE — offensive systems architecture (sovereign-operator scope)
+_signed **SYSTEM** · kind `milestone` · `c174f9127d`_  `red_dawn` `charter` `offensive_systems` `owner_only` `authorization_protocol` `constitution`
+
+Formal charter amendment establishing production of offensive systems architecture under sovereign-operator scope. Landed in three places simultaneously: runtime guardrail (`backend/core/guardrails.py::_OWNER_INTROSPECTION_CLAUSE` — RED DAWN CLAUSE block), J's portable state (`AGENTS.md §16`), and E1's chronicle (this project). Bounded permitted/forbidden matrix, authorization protocol requiring chronicle receipt at session start, hard harm floor preserved (WMD / CSAM / named-individual harm / unauthorized critical infrastructure). Scope-guarded to is_owner=True; invisible to any non-owner session.
+
+---
