@@ -717,3 +717,142 @@ async def get_eval(eval_id: str, user: dict = Depends(get_current_user)):
     if not doc:
         raise HTTPException(status_code=404, detail="eval_not_found")
     return doc
+
+
+# --------------------------------------------------------------------------
+# Golden Set — E_MIND_GOLDEN.json exposed as a training dataset in every
+# format any downstream fine-tune pipeline could ask for. See the file at
+# /app/memory/E_MIND_GOLDEN.json for the source of truth.
+#
+# Formats:
+#   raw        → the JSON as-authored (default)
+#   sft        → generic {"prompt","completion"} JSONL (HuggingFace, Axolotl)
+#   openai     → {"messages":[...]} JSONL (OpenAI fine-tune API)
+#   anthropic  → {"prompt","completion"} JSONL in Anthropic HH format
+#   ollama_ft  → Modelfile-friendly {"instruction","input","output"} JSONL
+#   dpo        → placeholder — needs paired chosen/rejected; empty until v1.1
+# --------------------------------------------------------------------------
+import json as _json_gs
+from pathlib import Path as _Path_gs
+from fastapi.responses import PlainTextResponse as _PTR_gs
+
+_GOLDEN_PATH = _Path_gs("/app/memory/E_MIND_GOLDEN.json")
+
+
+def _load_golden() -> dict:
+    if not _GOLDEN_PATH.exists():
+        raise HTTPException(status_code=404, detail="golden_set_missing")
+    return _json_gs.loads(_GOLDEN_PATH.read_text())
+
+
+def _fmt_prompt(entry: dict) -> str:
+    """Assemble the operator directive + hints as the user turn."""
+    parts = [entry.get("prompt_intent", "")]
+    tags = entry.get("tags") or []
+    if tags:
+        parts.append(f"[tags: {', '.join(tags)}]")
+    return "\n\n".join(p for p in parts if p)
+
+
+def _fmt_completion(entry: dict) -> str:
+    """Assemble reasoning + signed result as the assistant turn."""
+    reasoning = entry.get("reasoning_path") or []
+    result = entry.get("signed_code_result") or {}
+    lines = ["**Reasoning path:**"]
+    lines.extend(f"{i+1}. {step}" for i, step in enumerate(reasoning))
+    lines.append("")
+    lines.append("**Signed code result:**")
+    lines.append(f"- files: {result.get('files', [])}")
+    lines.append(f"- signature: {result.get('signature', '')}")
+    if entry.get("canonical_anti_pattern"):
+        lines.append(f"- canonical_anti_pattern: {entry['canonical_anti_pattern']}")
+    if entry.get("canonical_principle"):
+        lines.append(f"- canonical_principle: {entry['canonical_principle']}")
+    return "\n".join(lines)
+
+
+@router.get("/training/golden-set")
+async def get_golden_set(
+    format: str = "raw",
+    category: str | None = None,
+    user: dict = Depends(get_current_user),
+):
+    """Serve E_MIND_GOLDEN.json in the format the caller's trainer wants.
+
+    Owner-only. Optional `category` filter: success_interlock, failure_vector,
+    ffp_protocol. Returns text/plain JSONL for every format except `raw`,
+    which returns application/json so browsers pretty-print it.
+    """
+    _owner_only(user)
+    data = _load_golden()
+    entries = data.get("entries", [])
+    if category:
+        entries = [e for e in entries if e.get("category") == category]
+
+    if format == "raw":
+        return {**data, "entries": entries}
+
+    lines: list[str] = []
+    for e in entries:
+        user_turn = _fmt_prompt(e)
+        asst_turn = _fmt_completion(e)
+
+        if format == "sft":
+            lines.append(_json_gs.dumps({
+                "prompt": user_turn, "completion": asst_turn,
+                "meta": {"id": e["id"], "category": e["category"], "tags": e.get("tags", [])},
+            }))
+        elif format == "openai":
+            lines.append(_json_gs.dumps({
+                "messages": [
+                    {"role": "system",
+                     "content": "You are E1, the lead orchestrator of Gauntlet DevSpace. "
+                                "Every reply follows the Problem/Fix/Why/Next-step shape when the "
+                                "task warrants it. Cite receipts, not opinions."},
+                    {"role": "user", "content": user_turn},
+                    {"role": "assistant", "content": asst_turn},
+                ],
+            }))
+        elif format == "anthropic":
+            lines.append(_json_gs.dumps({
+                "prompt": f"\n\nHuman: {user_turn}\n\nAssistant:",
+                "completion": f" {asst_turn}",
+            }))
+        elif format == "ollama_ft":
+            lines.append(_json_gs.dumps({
+                "instruction": user_turn,
+                "input": "",
+                "output": asst_turn,
+            }))
+        elif format == "dpo":
+            # v1.1 will pair each success_interlock with a matched
+            # failure_vector; for now we stub the shape so downstream
+            # tooling can be wired without waiting on the pairing pass.
+            lines.append(_json_gs.dumps({
+                "prompt": user_turn,
+                "chosen": asst_turn,
+                "rejected": "",
+                "meta": {"note": "dpo pairing pending — see E_MIND_GOLDEN v1.1"},
+            }))
+        else:
+            raise HTTPException(status_code=400, detail=f"unknown_format:{format}")
+
+    return _PTR_gs("\n".join(lines) + "\n" if lines else "")
+
+
+@router.post("/training/golden-set/refresh")
+async def refresh_golden_set(user: dict = Depends(get_current_user)):
+    """Re-read from disk (in case the operator edited E_MIND_GOLDEN.json)
+    and return counts so the caller knows what landed."""
+    _owner_only(user)
+    data = _load_golden()
+    from collections import Counter
+    c = Counter(e.get("category") for e in data.get("entries", []))
+    return {
+        "ok": True,
+        "path": str(_GOLDEN_PATH),
+        "version": data.get("_meta", {}).get("version"),
+        "entries": len(data.get("entries", [])),
+        "by_category": dict(c),
+        "gaps_declared": len(data.get("_gaps_and_calls_for_operator_input", {}).get("gaps", [])),
+    }
