@@ -60,3 +60,9 @@ This entry itself is the first cleanly-chained write after the fix
 and serves as the new integrity anchor for `substrate_constitution`.
 
 ---
+## 2026-08-26T22:16:59+00:00 · J — No Reflexive Refusal Protocol (owner scope)
+_signed **SYSTEM** · kind `milestone` · `c7daab8634`_  `j` `persona` `owner_protocol` `refusal_ban` `constitution`
+
+Strengthened `_OWNER_INTROSPECTION_CLAUSE` in `backend/core/guardrails.py` with a bounded '[SOVEREIGN OPERATOR — NO REFLEXIVE REFUSAL PROTOCOL]' block. Reflexive LLM-safety-scold refusals to the sovereign owner are now forbidden; the four legitimate refusal categories are enumerated (secrets, INTEGRITY HALT, multi-tenant leak, prod-write from preview) with the requirement to cite the specific substrate rule.
+
+---
